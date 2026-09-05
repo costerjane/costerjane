@@ -1,0 +1,10 @@
+data/*.hdf5
+data/*.h5
+data/*.nc
+data/ampere/
+figures/*.mp4
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.python-version
+*.part
