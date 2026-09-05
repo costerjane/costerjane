@@ -333,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    preview_stamp = "00:00:08"
+    preview_stamp = "00:01:00"
     for movie, date in zip(daily, dates):
         extract_preview_frame(
             movie,
