@@ -58,5 +58,26 @@ register at the [AMPERE download portal](https://ampere.jhuapl.edu/download-sand
 The concatenated three-day MP4 is produced only by this script, not by
 JHUAPL.
 
+## AMPERE \(j_R\) at 16:00 MLT
+
+`plot_ampere_jr_mlt.py` builds a line plot of the **maximum fitted radial
+current** along a chosen magnetic-local-time meridian (default 16:00 MLT)
+from the public northern Type 1 summary plots — the same third panel as
+in the survey movies.
+
+The official GRD netCDF grids require an AMPERE portal login. These
+PNGs are public HTTP objects, with a colorbar clipped at
+\(\pm 1\,\mu\mathrm{A\,m^{-2}}\) exactly as displayed.
+
+```bash
+python3 plot_ampere_jr_mlt.py --start 2025-05-10 --end 2025-05-12 --mlt 16
+```
+
+Outputs in `figures/`:
+
+- `ampere_YYYY-MM-DD_YYYY-MM-DD_north_jrmax_16mlt.png` — time series
+- `ampere_YYYY-MM-DD_YYYY-MM-DD_north_jrmax_16mlt.csv` — 10-min samples
+- a one-frame overlay showing the sampled 16:00 MLT meridian
+
 Data: AMPERE / Johns Hopkins University Applied Physics Laboratory
 (Anderson et al.; Waters et al.). PI: Brian Anderson.
