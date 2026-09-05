@@ -103,30 +103,42 @@ def _vote_circle(
 
 
 def locate_polar_circle(panel: np.ndarray, mlat_outer: float) -> tuple[float, float, float]:
-    """Hough-fit the outermost latitude circle of an AMPERE polar panel."""
+    """Hough-fit the outermost latitude circle of an AMPERE polar panel.
+
+    Inner latitude rings (50°/60°) can out-vote the 40° circle on busy
+    frames, so after locating the center we take the *outermost* strong
+    radius peak rather than the single highest bin.
+    """
     xs, ys = _edge_points(panel)
     if xs.size < 100:
         raise RuntimeError("Not enough edges to locate the AMPERE polar plot")
     h, w = panel.shape[:2]
+    rmin, rmax = 0.30 * min(h, w), 0.52 * min(h, w)
     coarse = _vote_circle(
         xs,
         ys,
         range(int(0.35 * w), int(0.65 * w), 4),
         range(int(0.40 * h), int(0.65 * h), 4),
-        np.arange(0.30 * min(h, w), 0.52 * min(h, w) + 4, 4),
+        np.arange(rmin, rmax + 4, 4),
     )
-    _, cx0, cy0, r0 = coarse
+    _, cx0, cy0, _r0 = coarse
     fine = _vote_circle(
         xs,
         ys,
         range(cx0 - 6, cx0 + 7, 1),
         range(cy0 - 6, cy0 + 7, 1),
-        np.arange(r0 - 8, r0 + 9, 1),
+        np.arange(rmin, rmax + 1, 1),
     )
-    _, cx, cy, radius = fine
+    _, cx, cy, _r_any = fine
+    rr = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
+    hist, edges = np.histogram(rr, bins=np.arange(rmin, rmax + 1, 1))
+    if hist.max() < 20:
+        raise RuntimeError("Could not find a latitude circle in the j_R panel")
+    strong = np.where(hist >= 0.45 * hist.max())[0]
+    radius = float(0.5 * (edges[strong[-1]] + edges[strong[-1] + 1]))
     if radius < 50:
         raise RuntimeError(f"Implausible polar radius {radius:.1f}px")
-    return float(cx), float(cy), float(radius)
+    return float(cx), float(cy), radius
 
 
 def locate_colorbar(panel: np.ndarray) -> tuple[int, int, int]:
@@ -304,7 +316,7 @@ def plot_timeseries(
 ) -> Path:
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(11.0, 4.2), dpi=140)
-    ax.plot(times, jr_max, color="#b2182b", lw=1.15, label=fr"max $j_R$ at {mlt:.0f} MLT")
+    ax.plot(times, jr_max, color="#b2182b", lw=1.15, label=rf"max $j_R$ at {mlt:.0f} MLT")
     ax.axhline(COLORBAR_VMAX, color="0.55", ls="--", lw=0.8, label=fr"plot colorbar limit ($\pm{COLORBAR_VMAX:.0f}$)")
     ax.set_ylabel(r"max $j_R$ ($\mu$A m$^{-2}$)")
     ax.set_xlabel("Universal Time")
@@ -315,7 +327,7 @@ def plot_timeseries(
     )
     ax.set_ylim(-0.05, COLORBAR_VMAX + 0.12)
     ax.grid(True, alpha=0.35)
-    ax.legend(loc="upper right", frameon=False)
+    ax.legend(loc="upper left", frameon=False)
     ax.xaxis.set_major_locator(mdates.HourLocator(byhour=[0, 6, 12, 18]))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d\n%H UT"))
     fig.tight_layout()

@@ -144,6 +144,8 @@ def test_live_official_plot_matches_preview_scale() -> None:
     jr_max, mlat = jr.max_jr_at_mlt(panel, layout, mlt=16.0)
     assert 0.7 < jr_max <= 1.0, (jr_max, mlat)
     assert 68.0 < mlat < 80.0, (jr_max, mlat)
+    # Must use the 40° circle (~287 px), not the 50° ring (~230 px).
+    assert layout.radius > 260, layout.radius
 
 
 if __name__ == "__main__":
