@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import plot_ampere_movies as ampere
@@ -43,6 +45,28 @@ def test_day_frame_times_are_10_min_cadence() -> None:
     assert times[-1] == dt.datetime(2025, 5, 10, 23, 50, tzinfo=dt.timezone.utc)
 
 
+def test_download_listing_includes_curl_and_urls() -> None:
+    dates = ampere.daterange(dt.date(2025, 5, 10), dt.date(2025, 5, 12))
+    text = ampere.format_download_listing(dates, pole="north", boundary=40)
+    assert "ampere.20250510.k060_m08.north.40.smr.mp4" in text
+    assert "ampere.20250512.k060_m08.north.40.smr.mp4" in text
+    assert "curl -L --fail --retry 4" in text
+    assert "https://ampere.jhuapl.edu/download-sandbox/" in text
+    assert text.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+
+
+def test_print_urls_exits_without_download() -> None:
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = ampere.main(
+            ["--start", "2025-05-10", "--end", "2025-05-12", "--print-urls"]
+        )
+    assert rc == 0
+    out = buf.getvalue()
+    assert "curl -L --fail --retry 4" in out
+    assert out.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+
+
 def test_live_may_2025_products_exist() -> None:
     """Live check against the public AMPERE product tree used for the movies."""
     movie = ampere.movie_url(dt.date(2025, 5, 10), pole="north", boundary=40)
@@ -77,6 +101,8 @@ if __name__ == "__main__":
     test_plot_url_wraps_10_minute_window()
     test_daterange_inclusive()
     test_day_frame_times_are_10_min_cadence()
+    test_download_listing_includes_curl_and_urls()
+    test_print_urls_exits_without_download()
     test_live_may_2025_products_exist()
     test_assemble_tiny_movie()
     print("all tests passed")

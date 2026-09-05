@@ -1,0 +1,13 @@
+# Official JHUAPL AMPERE survey movies (north, 40° MLAT, k060_m08)
+# Direct HTTP from the public product tree; login is not required.
+# Portal browse/download: https://ampere.jhuapl.edu/download-sandbox/
+
+# URLs
+https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250510/ampere.20250510.k060_m08.north.40.smr.mp4
+https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250511/ampere.20250511.k060_m08.north.40.smr.mp4
+https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250512/ampere.20250512.k060_m08.north.40.smr.mp4
+
+# curl
+curl -L --fail --retry 4 -A 'costerjane-ampere-movies/1.0 (MIT Haystack; costera@mit.edu; research visualization)' -o 'ampere.20250510.k060_m08.north.40.smr.mp4' 'https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250510/ampere.20250510.k060_m08.north.40.smr.mp4'
+curl -L --fail --retry 4 -A 'costerjane-ampere-movies/1.0 (MIT Haystack; costera@mit.edu; research visualization)' -o 'ampere.20250511.k060_m08.north.40.smr.mp4' 'https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250511/ampere.20250511.k060_m08.north.40.smr.mp4'
+curl -L --fail --retry 4 -A 'costerjane-ampere-movies/1.0 (MIT Haystack; costera@mit.edu; research visualization)' -o 'ampere.20250512.k060_m08.north.40.smr.mp4' 'https://ampere.jhuapl.edu/products/smr.movies/k060_m08/2025/20250512/ampere.20250512.k060_m08.north.40.smr.mp4'

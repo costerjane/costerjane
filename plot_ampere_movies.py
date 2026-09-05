@@ -67,6 +67,47 @@ def movie_url(
     )
 
 
+def movie_filename(
+    date: dt.date,
+    *,
+    pole: str = DEFAULT_POLE,
+    boundary: int = DEFAULT_BOUNDARY,
+    fit: str = DEFAULT_FIT,
+) -> str:
+    """Basename of the official daily survey-movie MP4."""
+    ymd = date.strftime("%Y%m%d")
+    return f"ampere.{ymd}.{fit}.{pole}.{boundary}.smr.mp4"
+
+
+def curl_command(url: str, dest_name: str) -> str:
+    """Copy-pasteable curl line for a public AMPERE product URL."""
+    return f"curl -L --fail --retry 4 -A '{USER_AGENT}' -o '{dest_name}' '{url}'"
+
+
+def format_download_listing(
+    dates: list[dt.date],
+    *,
+    pole: str = DEFAULT_POLE,
+    boundary: int = DEFAULT_BOUNDARY,
+    fit: str = DEFAULT_FIT,
+) -> str:
+    """Human-readable list of official movie URLs and curl commands."""
+    lines = [
+        f"# Official JHUAPL AMPERE survey movies ({pole}, {boundary}° MLAT, {fit})",
+        "# Direct HTTP from the public product tree; login is not required.",
+        "# Portal browse/download: https://ampere.jhuapl.edu/download-sandbox/",
+        "",
+        "# URLs",
+    ]
+    urls = [movie_url(date, pole=pole, boundary=boundary, fit=fit) for date in dates]
+    lines.extend(urls)
+    lines.extend(["", "# curl"])
+    for date, url in zip(dates, urls):
+        lines.append(curl_command(url, movie_filename(date, pole=pole, boundary=boundary, fit=fit)))
+    lines.append("")
+    return "\n".join(lines)
+
+
 def plot_url(
     when: dt.datetime,
     *,
@@ -313,11 +354,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fps", default=12, type=int,
                         help="Frame rate used when assembling from PNGs")
     parser.add_argument("--skip-combined", action="store_true")
+    parser.add_argument(
+        "--print-urls",
+        action="store_true",
+        help="Print official JHUAPL MP4 URLs and curl commands, then exit",
+    )
     args = parser.parse_args(argv)
 
     dates = daterange(args.start, args.end)
+    listing = format_download_listing(
+        dates, pole=args.pole, boundary=args.boundary, fit=args.fit
+    )
+    if args.print_urls:
+        print(listing, end="")
+        return 0
+
     movie_dir = args.fig_dir
     frame_dir = args.data_dir / "frames"
+    movie_dir.mkdir(parents=True, exist_ok=True)
+    url_list = movie_dir / (
+        f"ampere_{args.start.isoformat()}_{args.end.isoformat()}"
+        f"_{args.pole}_{args.boundary:02d}deg_urls.txt"
+    )
+    url_list.write_text(listing, encoding="utf-8")
+    print(f"Wrote download URLs to {url_list}")
     daily: list[Path] = []
     for date in dates:
         daily.append(
