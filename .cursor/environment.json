@@ -1,0 +1,11 @@
+{
+  "name": "Coster Jane",
+  "install": "npm ci",
+  "terminals": [
+    {
+      "name": "dev",
+      "command": "npm run dev"
+    }
+  ],
+  "ports": [5173]
+}
