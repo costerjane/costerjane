@@ -52,7 +52,9 @@ def test_download_listing_includes_curl_and_urls() -> None:
     assert "ampere.20250512.k060_m08.north.40.smr.mp4" in text
     assert "curl -L --fail --retry 4" in text
     assert "https://ampere.jhuapl.edu/download-sandbox/" in text
-    assert text.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+    urls_block, curl_block = text.split("# curl", 1)
+    assert urls_block.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+    assert curl_block.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
 
 
 def test_print_urls_exits_without_download() -> None:
@@ -64,7 +66,9 @@ def test_print_urls_exits_without_download() -> None:
     assert rc == 0
     out = buf.getvalue()
     assert "curl -L --fail --retry 4" in out
-    assert out.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+    urls_block, curl_block = out.split("# curl", 1)
+    assert urls_block.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
+    assert curl_block.count("https://ampere.jhuapl.edu/products/smr.movies/") == 3
 
 
 def test_live_may_2025_products_exist() -> None:
