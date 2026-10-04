@@ -811,11 +811,11 @@ def plot_mag_north_polar_tec_scint(
     #   - boxed σφ legend in left white panel
     #   - polar globe shifted right
     #   - TEC colorbar on the right
-    fig = plt.figure(figsize=(16.0, 12.0), facecolor="white")
+    fig = plt.figure(figsize=(18.0, 13.0), facecolor="white")
     fig.text(
         0.5,
-        0.975,
-        f"Phase scintillation/TEC map for {t0} - {t1}",
+        0.985,
+        "Phase scintillation/TEC map",
         ha="center",
         va="top",
         fontsize=35,
@@ -823,7 +823,16 @@ def plot_mag_north_polar_tec_scint(
     )
     fig.text(
         0.5,
-        0.905,
+        0.945,
+        f"{t0} - {t1}",
+        ha="center",
+        va="top",
+        fontsize=35,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.895,
         "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
         "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)",
         ha="center",
@@ -831,7 +840,7 @@ def plot_mag_north_polar_tec_scint(
         fontsize=14,
     )
 
-    ax = fig.add_axes([0.40, 0.05, 0.48, 0.75], projection="polar")
+    ax = fig.add_axes([0.42, 0.04, 0.46, 0.72], projection="polar")
     _configure_polar_ax(ax, mlat_outer)
     # Explicit noon-at-top orientation (00 at bottom, 06 dawn right, 18 dusk left).
     ax.set_theta_zero_location("S")
@@ -870,7 +879,7 @@ def plot_mag_north_polar_tec_scint(
 
     fig.text(
         0.5,
-        0.855,
+        0.845,
         f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  TEC samples: {len(used_times)}  ·  "
         f"mlat ≥ {mlat_outer:.0f}°",
         ha="center",
