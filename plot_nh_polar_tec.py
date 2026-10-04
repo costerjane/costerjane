@@ -42,10 +42,11 @@ SCIN_HEIGHT_KM = 250.0  # pierce_alt index 1 in Madrigal scintillation files
 PIERCE_ALT_INDEX = 1
 TEC_VMIN = 0.0
 TEC_VMAX = 50.0
-SIGMA_PHI_VMIN = 0.0
-SIGMA_PHI_VMAX = 1.0
+SIGMA_PHI_VMIN = 0.2
+SIGMA_PHI_VMAX = 0.9
 SCIN_TIME_WINDOW_MIN = 2.5  # match nearest 5-min sample
 SCIN_ELEV_MIN = 20.0
+SCIN_MARKER_SIZE = 55.0
 
 DEFAULT_USER = os.environ.get("MADRIGAL_USER", "Anthea Coster")
 DEFAULT_EMAIL = os.environ.get("MADRIGAL_EMAIL", "costera@mit.edu")
@@ -464,8 +465,9 @@ def select_scintillation_slice(
     when: dt.datetime,
     mlat_outer: float = MLAT_OUTER,
     window_min: float = SCIN_TIME_WINDOW_MIN,
+    sigma_vmin: float = SIGMA_PHI_VMIN,
 ) -> pd.DataFrame:
-    """Return NH scintillation rows near ``when`` with finite σφ and mlat/MLT."""
+    """Return NH scintillation rows near ``when`` with σφ in the plot range."""
     if scin is None or scin.empty:
         return pd.DataFrame()
     if when.tzinfo is None:
@@ -482,6 +484,7 @@ def select_scintillation_slice(
         & np.isfinite(scin["mlt"])
         & np.isfinite(scin["sigma_phi"])
         & (scin["mlat"] >= mlat_outer)
+        & (scin["sigma_phi"] >= sigma_vmin)
     ].copy()
     return slc
 
@@ -489,29 +492,28 @@ def select_scintillation_slice(
 def overplot_scintillation(
     ax,
     scin_slice: pd.DataFrame,
+    sigma_vmin: float = SIGMA_PHI_VMIN,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ):
-    """Scatter scintillation pierce points on an existing polar TEC axis."""
+    """Scatter elevated σφ pierce points as filled circles on a polar TEC axis."""
     if scin_slice is None or scin_slice.empty:
         return None
     theta, radius = polar_coords(
         scin_slice["mlat"].to_numpy(), scin_slice["mlt"].to_numpy()
     )
-    # Size emphasizes elevated phase scintillation while keeping quiet points visible.
-    sizes = 18.0 + 70.0 * np.clip(
-        scin_slice["sigma_phi"].to_numpy() / max(sigma_vmax, 1e-6), 0.0, 1.5
-    )
     sc = ax.scatter(
         theta,
         radius,
         c=scin_slice["sigma_phi"].to_numpy(),
-        s=sizes,
-        cmap="magma_r",
-        norm=Normalize(vmin=SIGMA_PHI_VMIN, vmax=sigma_vmax),
-        edgecolors="k",
-        linewidths=0.35,
-        alpha=0.95,
-        zorder=4,
+        s=SCIN_MARKER_SIZE,
+        marker="o",
+        cmap="plasma",
+        norm=Normalize(vmin=sigma_vmin, vmax=sigma_vmax),
+        edgecolors="black",
+        linewidths=0.9,
+        alpha=1.0,
+        zorder=5,
+        clip_on=False,
     )
     return sc
 
@@ -523,6 +525,7 @@ def plot_nh_polar_snapshot(
     scin: pd.DataFrame | None = None,
     mlat_outer: float = MLAT_OUTER,
     tec_vmax: float = TEC_VMAX,
+    sigma_vmin: float = SIGMA_PHI_VMIN,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ) -> Path:
     idx = nearest_time_index(grid["times"], when)
@@ -558,14 +561,18 @@ def plot_nh_polar_snapshot(
         alpha=0.90,
         zorder=2,
     )
-    scin_slice = select_scintillation_slice(scin, stamp, mlat_outer=mlat_outer)
-    sc_scin = overplot_scintillation(ax, scin_slice, sigma_vmax=sigma_vmax)
+    scin_slice = select_scintillation_slice(
+        scin, stamp, mlat_outer=mlat_outer, sigma_vmin=sigma_vmin
+    )
+    sc_scin = overplot_scintillation(
+        ax, scin_slice, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax
+    )
 
     cbar = fig.colorbar(sc_tec, ax=ax, pad=0.08, shrink=0.72, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     cbar.ax.tick_params(labelsize=9)
     if sc_scin is not None:
-        cbar2 = fig.colorbar(sc_scin, ax=ax, pad=0.02, shrink=0.72, extend="max")
+        cbar2 = fig.colorbar(sc_scin, ax=ax, pad=0.02, shrink=0.72, extend="both")
         cbar2.set_label(r"Phase scintillation $\sigma_\phi$ (rad)", fontsize=11)
         cbar2.ax.tick_params(labelsize=9)
 
@@ -579,7 +586,7 @@ def plot_nh_polar_snapshot(
         f"{stamp:%d %B %Y  %H:%M} UT   |   CEDAR Madrigal / MIT Haystack\n"
         f"AACGM magnetic latitude & MLT   ·   looking down on magnetic north pole\n"
         f"TEC median {np.median(finite):.1f} TECU   ·   "
-        f"scintillation points {n_scin}"
+        f"σφ circles ≥ {sigma_vmin:.1f} (n={n_scin}, scale {sigma_vmin:.1f}–{sigma_vmax:.1f})"
         + (f"   ·   median σφ {med_sig:.2f}" if n_scin else "")
         + f"   ·   mlat ≥ {mlat_outer:.0f}°",
         fontsize=11,
@@ -612,6 +619,7 @@ def plot_nh_polar_panels(
     scin: pd.DataFrame | None = None,
     mlat_outer: float = MLAT_OUTER,
     tec_vmax: float = TEC_VMAX,
+    sigma_vmin: float = SIGMA_PHI_VMIN,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ) -> Path:
     cmap = plt.get_cmap("turbo").copy()
@@ -624,7 +632,8 @@ def plot_nh_polar_panels(
     fig.suptitle(
         f"GNSS VTEC + scintillation — Northern Hemisphere (magnetic)\n"
         f"{date:%d %B %Y}  |  CEDAR Madrigal · AACGM mlat / MLT · "
-        f"σφ overplot (pierce {SCIN_HEIGHT_KM:.0f} km)",
+        f"σφ circles {sigma_vmin:.1f}–{sigma_vmax:.1f} "
+        f"(pierce {SCIN_HEIGHT_KM:.0f} km)",
         fontsize=13,
         fontweight="bold",
         y=0.995,
@@ -661,15 +670,19 @@ def plot_nh_polar_panels(
             alpha=0.90,
             zorder=2,
         )
-        scin_slice = select_scintillation_slice(scin, stamp, mlat_outer=mlat_outer)
-        sc = overplot_scintillation(ax, scin_slice, sigma_vmax=sigma_vmax)
+        scin_slice = select_scintillation_slice(
+            scin, stamp, mlat_outer=mlat_outer, sigma_vmin=sigma_vmin
+        )
+        sc = overplot_scintillation(
+            ax, scin_slice, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax
+        )
         if sc is not None:
             sc_scin = sc
         finite = tec[nh]
         n_scin = 0 if scin_slice is None else len(scin_slice)
         ax.set_title(
             f"{stamp:%H:%M} UT   ·   TEC median {np.median(finite):.1f}   ·   "
-            f"n_scin={n_scin}",
+            f"n_σφ≥{sigma_vmin:.1f}={n_scin}",
             fontsize=10,
             fontweight="bold",
             pad=12,
@@ -683,7 +696,7 @@ def plot_nh_polar_panels(
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     if sc_scin is not None:
         cax2 = fig.add_axes([0.93, 0.20, 0.016, 0.55])
-        cbar2 = fig.colorbar(sc_scin, cax=cax2, extend="max")
+        cbar2 = fig.colorbar(sc_scin, cax=cax2, extend="both")
         cbar2.set_label(r"$\sigma_\phi$ (rad)", fontsize=11)
     fig.text(
         0.04,
@@ -744,6 +757,7 @@ def main() -> None:
     )
     parser.add_argument("--mlat-outer", default=MLAT_OUTER, type=float)
     parser.add_argument("--tec-vmax", default=TEC_VMAX, type=float)
+    parser.add_argument("--sigma-vmin", default=SIGMA_PHI_VMIN, type=float)
     parser.add_argument("--sigma-vmax", default=SIGMA_PHI_VMAX, type=float)
     parser.add_argument("--elev-min", default=SCIN_ELEV_MIN, type=float)
     parser.add_argument("--user", default=DEFAULT_USER)
@@ -808,6 +822,7 @@ def main() -> None:
         scin=scin,
         mlat_outer=args.mlat_outer,
         tec_vmax=args.tec_vmax,
+        sigma_vmin=args.sigma_vmin,
         sigma_vmax=args.sigma_vmax,
     )
     when = dt.datetime(
@@ -824,6 +839,7 @@ def main() -> None:
         args.fig_dir
         / f"nh_polar_tec_{args.date.isoformat()}_{args.snapshot_hour:02d}ut.png",
         scin=scin,
+        sigma_vmin=args.sigma_vmin,
         mlat_outer=args.mlat_outer,
         tec_vmax=args.tec_vmax,
         sigma_vmax=args.sigma_vmax,

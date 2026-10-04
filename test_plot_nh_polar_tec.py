@@ -73,12 +73,21 @@ def test_scintillation_magnetic_overlay(scin_path: Path) -> None:
     assert ((scin["mlt"] >= 0.0) & (scin["mlt"] < 24.0)).all()
 
     when = dt.datetime(2026, 1, 20, 20, 0, tzinfo=dt.timezone.utc)
-    slc = tec.select_scintillation_slice(scin, when, mlat_outer=tec.MLAT_OUTER)
+    slc = tec.select_scintillation_slice(
+        scin,
+        when,
+        mlat_outer=tec.MLAT_OUTER,
+        sigma_vmin=tec.SIGMA_PHI_VMIN,
+    )
     assert len(slc) > 0
     assert (slc["mlat"] >= tec.MLAT_OUTER).all()
+    assert (slc["sigma_phi"] >= tec.SIGMA_PHI_VMIN).all()
+    assert tec.SIGMA_PHI_VMIN == 0.2
+    assert tec.SIGMA_PHI_VMAX == 0.9
     print(
         f"20 UT scintillation overlay: n={len(slc)}  "
-        f"σφ median={slc['sigma_phi'].median():.3f}  "
+        f"σφ ≥ {tec.SIGMA_PHI_VMIN:.1f}  "
+        f"median={slc['sigma_phi'].median():.3f}  "
         f"sites={sorted(slc['site'].unique())}"
     )
 
