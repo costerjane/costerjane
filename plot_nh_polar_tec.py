@@ -46,7 +46,11 @@ SIGMA_PHI_VMIN = 0.2
 SIGMA_PHI_VMAX = 0.9
 SCIN_TIME_WINDOW_MIN = 2.5  # match nearest 5-min sample
 SCIN_ELEV_MIN = 20.0
-SCIN_MARKER_SIZE = 55.0
+# Matplotlib scatter sizes are area in points^2; keep these large so σφ
+# circles dominate the TEC background dots.
+SCIN_MARKER_SIZE_MIN = 180.0   # σφ = SIGMA_PHI_VMIN
+SCIN_MARKER_SIZE_MAX = 1200.0  # σφ = SIGMA_PHI_VMAX
+SCIN_MARKER_FACE = "#ff00aa"   # high-contrast magenta fill
 
 DEFAULT_USER = os.environ.get("MADRIGAL_USER", "Anthea Coster")
 DEFAULT_EMAIL = os.environ.get("MADRIGAL_EMAIL", "costera@mit.edu")
@@ -489,32 +493,87 @@ def select_scintillation_slice(
     return slc
 
 
+def sigma_phi_marker_sizes(
+    sigma_phi: np.ndarray,
+    sigma_vmin: float = SIGMA_PHI_VMIN,
+    sigma_vmax: float = SIGMA_PHI_VMAX,
+) -> np.ndarray:
+    """Map σφ in [vmin, vmax] to large filled-circle areas."""
+    span = max(sigma_vmax - sigma_vmin, 1e-6)
+    frac = np.clip((np.asarray(sigma_phi, dtype=np.float64) - sigma_vmin) / span, 0.0, 1.0)
+    return SCIN_MARKER_SIZE_MIN + frac * (SCIN_MARKER_SIZE_MAX - SCIN_MARKER_SIZE_MIN)
+
+
 def overplot_scintillation(
     ax,
     scin_slice: pd.DataFrame,
     sigma_vmin: float = SIGMA_PHI_VMIN,
     sigma_vmax: float = SIGMA_PHI_VMAX,
+    add_size_legend: bool = False,
 ):
-    """Scatter elevated σφ pierce points as filled circles on a polar TEC axis."""
+    """Scatter elevated σφ as large filled circles; size encodes σφ."""
     if scin_slice is None or scin_slice.empty:
         return None
     theta, radius = polar_coords(
         scin_slice["mlat"].to_numpy(), scin_slice["mlt"].to_numpy()
     )
+    values = scin_slice["sigma_phi"].to_numpy(dtype=np.float64)
+    sizes = sigma_phi_marker_sizes(values, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax)
     sc = ax.scatter(
         theta,
         radius,
-        c=scin_slice["sigma_phi"].to_numpy(),
-        s=SCIN_MARKER_SIZE,
+        c=values,
+        s=sizes,
         marker="o",
         cmap="plasma",
         norm=Normalize(vmin=sigma_vmin, vmax=sigma_vmax),
         edgecolors="black",
-        linewidths=0.9,
+        linewidths=1.4,
         alpha=1.0,
-        zorder=5,
+        zorder=20,
         clip_on=False,
     )
+    # Reinforce with an opaque magenta outline ring so circles stay visible
+    # even when the plasma fill blends with high-TEC reds/yellows.
+    ax.scatter(
+        theta,
+        radius,
+        s=sizes * 1.15,
+        marker="o",
+        facecolors="none",
+        edgecolors=SCIN_MARKER_FACE,
+        linewidths=2.2,
+        zorder=21,
+        clip_on=False,
+    )
+    if add_size_legend:
+        legend_vals = np.array([sigma_vmin, 0.5 * (sigma_vmin + sigma_vmax), sigma_vmax])
+        handles = []
+        for val in legend_vals:
+            handles.append(
+                ax.scatter(
+                    [],
+                    [],
+                    s=float(sigma_phi_marker_sizes([val], sigma_vmin, sigma_vmax)[0]),
+                    marker="o",
+                    facecolors=SCIN_MARKER_FACE,
+                    edgecolors="black",
+                    linewidths=1.2,
+                    label=f"{val:.1f}",
+                )
+            )
+        ax.legend(
+            handles=handles,
+            title=r"$\sigma_\phi$",
+            loc="upper left",
+            bbox_to_anchor=(1.18, 1.05),
+            frameon=True,
+            fontsize=8,
+            title_fontsize=9,
+            labelspacing=1.4,
+            borderpad=0.8,
+            scatterpoints=1,
+        )
     return sc
 
 
@@ -554,18 +613,22 @@ def plot_nh_polar_snapshot(
         theta[nh],
         radius[nh],
         c=tec[nh],
-        s=14,
+        s=10,
         cmap=cmap,
         norm=Normalize(vmin=TEC_VMIN, vmax=tec_vmax),
         linewidths=0,
-        alpha=0.90,
+        alpha=0.75,
         zorder=2,
     )
     scin_slice = select_scintillation_slice(
         scin, stamp, mlat_outer=mlat_outer, sigma_vmin=sigma_vmin
     )
     sc_scin = overplot_scintillation(
-        ax, scin_slice, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax
+        ax,
+        scin_slice,
+        sigma_vmin=sigma_vmin,
+        sigma_vmax=sigma_vmax,
+        add_size_legend=True,
     )
 
     cbar = fig.colorbar(sc_tec, ax=ax, pad=0.08, shrink=0.72, extend="max")
@@ -663,18 +726,22 @@ def plot_nh_polar_panels(
             theta[nh],
             radius[nh],
             c=tec[nh],
-            s=9,
+            s=7,
             cmap=cmap,
             norm=Normalize(vmin=TEC_VMIN, vmax=tec_vmax),
             linewidths=0,
-            alpha=0.90,
+            alpha=0.75,
             zorder=2,
         )
         scin_slice = select_scintillation_slice(
             scin, stamp, mlat_outer=mlat_outer, sigma_vmin=sigma_vmin
         )
         sc = overplot_scintillation(
-            ax, scin_slice, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax
+            ax,
+            scin_slice,
+            sigma_vmin=sigma_vmin,
+            sigma_vmax=sigma_vmax,
+            add_size_legend=False,
         )
         if sc is not None:
             sc_scin = sc

@@ -84,10 +84,19 @@ def test_scintillation_magnetic_overlay(scin_path: Path) -> None:
     assert (slc["sigma_phi"] >= tec.SIGMA_PHI_VMIN).all()
     assert tec.SIGMA_PHI_VMIN == 0.2
     assert tec.SIGMA_PHI_VMAX == 0.9
+    sizes = tec.sigma_phi_marker_sizes(
+        np.array([0.2, 0.9]),
+        sigma_vmin=tec.SIGMA_PHI_VMIN,
+        sigma_vmax=tec.SIGMA_PHI_VMAX,
+    )
+    assert sizes[0] == tec.SCIN_MARKER_SIZE_MIN
+    assert sizes[1] == tec.SCIN_MARKER_SIZE_MAX
+    assert sizes[1] > sizes[0]
     print(
         f"20 UT scintillation overlay: n={len(slc)}  "
         f"σφ ≥ {tec.SIGMA_PHI_VMIN:.1f}  "
         f"median={slc['sigma_phi'].median():.3f}  "
+        f"marker sizes {sizes[0]:.0f}–{sizes[1]:.0f}  "
         f"sites={sorted(slc['site'].unique())}"
     )
 
