@@ -31,10 +31,10 @@ def test_sigma_phi_bins() -> None:
     print("σφ bin styles OK:", list(zip([0.05, 0.25, 0.75], sizes)))
 
 
-def test_geo_window_selection(scin_path: Path) -> None:
+def test_mag_window_selection(scin_path: Path) -> None:
     t0 = dt.datetime(2026, 1, 20, 17, 40, tzinfo=dt.timezone.utc)
     t1 = dt.datetime(2026, 1, 20, 18, 0, tzinfo=dt.timezone.utc)
-    csv_path = Path("data") / "scint_geo_test_1740-1800.csv"
+    csv_path = Path("data") / "scint_mag_test_1740-1800.csv"
     if csv_path.exists():
         csv_path.unlink()
     scin = tec.load_or_build_scintillation_mag(
@@ -43,16 +43,23 @@ def test_geo_window_selection(scin_path: Path) -> None:
         elev_min=20.0,
         t0=t0,
         t1=t1,
-        convert_magnetic=False,
+        convert_magnetic=True,
     )
     assert len(scin) > 0
-    slc = tec.select_scintillation_window(scin, t0, t1, gdlat_min=40.0)
+    assert {"mlat", "mlt", "sigma_phi"}.issubset(scin.columns)
+    slc = tec.select_scintillation_window(scin, t0, t1, mlat_min=40.0)
     assert len(slc) > 0
-    assert (slc["gdlat"] >= 40.0).all()
+    assert (slc["mlat"] >= 40.0).all()
+    assert ((slc["mlt"] >= 0.0) & (slc["mlt"] < 24.0)).all()
     n_sig = int((slc["sigma_phi"] >= 0.1).sum())
+    # Noon at top: MLT=12 maps to theta=π with zero at south.
+    theta, radius = tec.polar_coords(np.array([70.0]), np.array([12.0]))
+    assert np.isclose(theta[0], np.pi)
+    assert np.isclose(radius[0], 20.0)
     print(
-        f"17:40–18:00 geo scin: n={len(slc)}  σφ≥0.1={n_sig}  "
-        f"max={slc['sigma_phi'].max():.3f}"
+        f"17:40–18:00 mag scin: n={len(slc)}  σφ≥0.1={n_sig}  "
+        f"mlat {slc['mlat'].min():.1f}–{slc['mlat'].max():.1f}  "
+        f"MLT {slc['mlt'].min():.2f}–{slc['mlt'].max():.2f}"
     )
 
 
@@ -66,5 +73,5 @@ if __name__ == "__main__":
         raise SystemExit("Missing scin_20260120 HDF5 in data/")
     test_load_tec(tec_matches[0])
     test_sigma_phi_bins()
-    test_geo_window_selection(scin_matches[0])
+    test_mag_window_selection(scin_matches[0])
     print("all tests passed")

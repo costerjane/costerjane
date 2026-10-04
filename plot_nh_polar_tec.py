@@ -5,9 +5,10 @@ Downloads CEDAR Madrigal:
   * World-wide GNSS Receiver Network VTEC (instrument 8000, kindat 3500)
   * GNSS Scintillation Network (instrument 8010, kindat 20000)
 
-Default product is a geographic north-polar TEC heatmap with reference-style
-σφ circles (green = not significant; red sized bins 0.1–0.6+ with blue
-edges). Optional ``--magnetic-also`` also writes AACGM mlat/MLT polar panels.
+Default product is an AACGM magnetic-latitude / MLT north-polar map
+(12 MLT at top) of TEC with reference-style σφ circles (green = not
+significant; red sized bins 0.1–0.6+ with blue edges). Optional
+``--geo-also`` also writes the geographic north-polar map.
 """
 
 from __future__ import annotations
@@ -707,6 +708,107 @@ def mean_tec_slice(
     return mean, used
 
 
+def plot_mag_north_polar_tec_scint(
+    grid: dict,
+    scin: pd.DataFrame | None,
+    t0: dt.datetime,
+    t1: dt.datetime,
+    outfile: Path,
+    mlat_outer: float = MLAT_OUTER,
+    tec_vmax: float = TEC_VMAX,
+) -> Path:
+    """Magnetic north-polar TEC + σφ in AACGM mlat/MLT (12 MLT at top)."""
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=dt.timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=dt.timezone.utc)
+
+    tec_mean, used_times = mean_tec_slice(grid, t0, t1)
+    # Convert geographic TEC grid at window midpoint (standard for a mean map).
+    mid = t0 + (t1 - t0) / 2
+    mlat, mlt = geo_to_mlat_mlt(grid["gdlat"], grid["glon"], mid)
+    theta, radius = polar_coords(mlat, mlt)
+    nh = (
+        np.isfinite(mlat)
+        & np.isfinite(mlt)
+        & np.isfinite(tec_mean)
+        & (mlat >= mlat_outer)
+    )
+    if not np.any(nh):
+        raise RuntimeError(f"No NH magnetic TEC samples in window {t0} – {t1}")
+
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="#f7f7f7")
+
+    fig = plt.figure(figsize=(9.6, 9.4), facecolor="white")
+    ax = fig.add_subplot(111, projection="polar")
+    _configure_polar_ax(ax, mlat_outer)
+    # Explicit noon-at-top orientation (00 at bottom, 06 dawn right, 18 dusk left).
+    ax.set_theta_zero_location("S")
+    ax.set_theta_direction(1)
+
+    sc_tec = ax.scatter(
+        theta[nh],
+        radius[nh],
+        c=tec_mean[nh],
+        s=16,
+        cmap=cmap,
+        norm=Normalize(vmin=TEC_VMIN, vmax=tec_vmax),
+        linewidths=0,
+        alpha=0.90,
+        zorder=2,
+    )
+
+    scin_slice = select_scintillation_window(scin, t0, t1, mlat_min=mlat_outer)
+    if scin_slice is not None and not scin_slice.empty:
+        th_s, r_s = polar_coords(
+            scin_slice["mlat"].to_numpy(), scin_slice["mlt"].to_numpy()
+        )
+        overplot_sigma_phi_binned(
+            ax,
+            th_s,
+            r_s,
+            scin_slice["sigma_phi"].to_numpy(),
+            add_legend=True,
+            legend_loc="upper right",
+            zorder=10,
+        )
+        n_scin = len(scin_slice)
+        n_sig = int((scin_slice["sigma_phi"] >= SIGMA_PHI_QUIET_THRESHOLD).sum())
+    else:
+        n_scin = 0
+        n_sig = 0
+        add_sigma_phi_legend(ax, loc="upper right")
+
+    ax.set_title(
+        f"Phase scintillation/TEC map for {t0} - {t1}\n"
+        f"AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
+        f"CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)\n"
+        f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  TEC samples: {len(used_times)}  ·  "
+        f"mlat ≥ {mlat_outer:.0f}°",
+        fontsize=11,
+        fontweight="bold",
+        pad=16,
+    )
+    cbar = fig.colorbar(sc_tec, ax=ax, shrink=0.72, pad=0.10, extend="max")
+    cbar.set_label("Vertical TEC (TECU)", fontsize=11)
+    fig.text(
+        0.5,
+        0.015,
+        "Magnetic north-pole view: 12 MLT top, 00 bottom, 06 dawn right, 18 dusk left.  "
+        "σφ: green = not significant; red size bins 0.1–0.6+ (blue edges).  "
+        "PI: Anthea Coster.",
+        ha="center",
+        fontsize=8,
+        color="0.35",
+    )
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {outfile}")
+    return outfile
+
+
 def plot_geo_north_polar_tec_scint(
     grid: dict,
     scin: pd.DataFrame | None,
@@ -1080,9 +1182,14 @@ def main() -> None:
         help="Plot TEC only (no scintillation download/overlay)",
     )
     parser.add_argument(
-        "--magnetic-also",
+        "--geo-also",
         action="store_true",
-        help="Also write AACGM mlat/MLT polar panels/snapshot",
+        help="Also write the geographic north-polar map",
+    )
+    parser.add_argument(
+        "--panels-also",
+        action="store_true",
+        help="Also write multi-hour AACGM mlat/MLT panels",
     )
     args = parser.parse_args()
 
@@ -1123,45 +1230,79 @@ def main() -> None:
         end_h, end_m, tzinfo=dt.timezone.utc,
     )
 
-    scin = None
+    # Primary product: both TEC and σφ in AACGM mlat / MLT, noon at top.
+    scin_mag = None
     if scin_path is not None:
-        csv_path = (
+        mag_csv = (
             args.data_dir
-            / f"scint_geo_{args.date.isoformat()}_{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.csv"
+            / (
+                f"scint_mag_coords_{args.date.isoformat()}_"
+                f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.csv"
+            )
         )
-        scin = load_or_build_scintillation_mag(
+        scin_mag = load_or_build_scintillation_mag(
             scin_path,
-            csv_path=csv_path,
+            csv_path=mag_csv,
+            elev_min=args.elev_min,
+            t0=t0,
+            t1=t1,
+            convert_magnetic=True,
+        )
+
+    plot_mag_north_polar_tec_scint(
+        grid,
+        scin_mag,
+        t0,
+        t1,
+        args.fig_dir
+        / (
+            f"phase_scintillation_tec_mlt_{args.date.isoformat()}_"
+            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
+        ),
+        mlat_outer=args.mlat_outer,
+        tec_vmax=args.tec_vmax,
+    )
+
+    if args.geo_also:
+        geo_csv = (
+            args.data_dir
+            / (
+                f"scint_geo_{args.date.isoformat()}_"
+                f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.csv"
+            )
+        )
+        scin_geo = load_or_build_scintillation_mag(
+            scin_path,
+            csv_path=geo_csv,
             elev_min=args.elev_min,
             t0=t0,
             t1=t1,
             convert_magnetic=False,
         )
+        plot_geo_north_polar_tec_scint(
+            grid,
+            scin_geo,
+            t0,
+            t1,
+            args.fig_dir
+            / (
+                f"phase_scintillation_tec_{args.date.isoformat()}_"
+                f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
+            ),
+            lat_min=args.lat_min,
+            tec_vmax=args.tec_vmax,
+        )
 
-    plot_geo_north_polar_tec_scint(
-        grid,
-        scin,
-        t0,
-        t1,
-        args.fig_dir
-        / (
-            f"phase_scintillation_tec_{args.date.isoformat()}_"
-            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
-        ),
-        lat_min=args.lat_min,
-        tec_vmax=args.tec_vmax,
-    )
-
-    if args.magnetic_also:
+    if args.panels_also:
         hours = [int(h.strip()) for h in args.hours.split(",") if h.strip()]
         plot_hours = sorted(set(hours + [args.snapshot_hour]))
-        mag_csv = (
+        panel_csv = (
             args.data_dir
             / f"scint_mag_coords_{args.date.isoformat()}_hours-{'-'.join(map(str, plot_hours))}.csv"
         )
-        scin_mag = load_or_build_scintillation_mag(
+        scin_panels = load_or_build_scintillation_mag(
             scin_path,
-            csv_path=mag_csv,
+            csv_path=panel_csv,
             elev_min=args.elev_min,
             date=args.date,
             hours=plot_hours,
@@ -1172,7 +1313,7 @@ def main() -> None:
             hours,
             args.date,
             args.fig_dir / f"nh_polar_tec_{args.date.isoformat()}_panels.png",
-            scin=scin_mag,
+            scin=scin_panels,
             mlat_outer=args.mlat_outer,
             tec_vmax=args.tec_vmax,
         )
@@ -1189,7 +1330,7 @@ def main() -> None:
             when,
             args.fig_dir
             / f"nh_polar_tec_{args.date.isoformat()}_{args.snapshot_hour:02d}ut.png",
-            scin=scin_mag,
+            scin=scin_panels,
             mlat_outer=args.mlat_outer,
             tec_vmax=args.tec_vmax,
         )
