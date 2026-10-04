@@ -637,24 +637,37 @@ def add_sigma_phi_legend(
     ax.legend(**kwargs)
 
 
-def add_sigma_phi_legend_left(fig, fontsize: float = 9) -> None:
-    """Place the σφ legend in the white margin left of the polar globe."""
-    leg_ax = fig.add_axes([0.015, 0.22, 0.22, 0.50])
-    leg_ax.set_axis_off()
-    handles = _sigma_phi_legend_handles(leg_ax)
-    leg_ax.legend(
-        handles=handles,
-        loc="center",
-        frameon=True,
-        fontsize=fontsize,
-        labelspacing=1.25,
-        borderpad=0.9,
-        scatterpoints=1,
-        framealpha=0.97,
-        fancybox=True,
-        title=r"$\sigma_\phi$",
-        title_fontsize=10,
-    )
+def add_sigma_phi_legend_left(fig, fontsize: float = 10) -> None:
+    """Draw σφ legend in a dedicated white panel left of the polar globe."""
+    leg_ax = fig.add_axes([0.03, 0.20, 0.26, 0.55])
+    leg_ax.set_xlim(0, 1)
+    leg_ax.set_ylim(0, 1)
+    leg_ax.set_xticks([])
+    leg_ax.set_yticks([])
+    for spine in leg_ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("0.35")
+        spine.set_linewidth(1.0)
+    leg_ax.set_facecolor("white")
+    leg_ax.set_title(r"$\sigma_\phi$ legend", fontsize=12, fontweight="bold", pad=8)
+    ys = np.linspace(0.90, 0.10, len(SIGMA_PHI_BINS))
+    for y, (label, _low, _high, size) in zip(ys, SIGMA_PHI_BINS):
+        face = (
+            SIGMA_PHI_QUIET_FACE
+            if label.startswith("No significant")
+            else SIGMA_PHI_ACTIVE_FACE
+        )
+        leg_ax.scatter(
+            [0.12],
+            [y],
+            s=size,
+            marker="o",
+            facecolors=face,
+            edgecolors=SIGMA_PHI_EDGE,
+            linewidths=1.2,
+            clip_on=False,
+        )
+        leg_ax.text(0.24, y, label, va="center", ha="left", fontsize=fontsize)
 
 
 def overplot_sigma_phi_binned(
@@ -780,9 +793,32 @@ def plot_mag_north_polar_tec_scint(
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color="#f7f7f7")
 
-    # Left white margin holds the σφ legend; title sits above the globe.
-    fig = plt.figure(figsize=(11.4, 9.8), facecolor="white")
-    ax = fig.add_axes([0.30, 0.07, 0.56, 0.76], projection="polar")
+    # Explicit figure layout:
+    #   - title block at top of the figure
+    #   - boxed σφ legend in left white panel
+    #   - polar globe shifted right
+    #   - TEC colorbar on the right
+    fig = plt.figure(figsize=(12.5, 10.2), facecolor="white")
+    fig.text(
+        0.5,
+        0.965,
+        f"Phase scintillation/TEC map for {t0} - {t1}",
+        ha="center",
+        va="top",
+        fontsize=16,
+        fontweight="bold",
+    )
+    fig.text(
+        0.5,
+        0.915,
+        "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
+        "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)",
+        ha="center",
+        va="top",
+        fontsize=11,
+    )
+
+    ax = fig.add_axes([0.34, 0.06, 0.52, 0.78], projection="polar")
     _configure_polar_ax(ax, mlat_outer)
     # Explicit noon-at-top orientation (00 at bottom, 06 dawn right, 18 dusk left).
     ax.set_theta_zero_location("S")
@@ -819,30 +855,22 @@ def plot_mag_north_polar_tec_scint(
         n_scin = 0
         n_sig = 0
 
-    add_sigma_phi_legend_left(fig, fontsize=9)
-
-    fig.suptitle(
-        f"Phase scintillation/TEC map for {t0} - {t1}",
-        fontsize=14,
-        fontweight="bold",
-        y=0.975,
-    )
     fig.text(
-        0.58,
-        0.925,
-        "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
-        "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)\n"
+        0.5,
+        0.875,
         f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  TEC samples: {len(used_times)}  ·  "
         f"mlat ≥ {mlat_outer:.0f}°",
         ha="center",
         va="top",
         fontsize=10,
     )
-    cax = fig.add_axes([0.89, 0.20, 0.02, 0.52])
+    add_sigma_phi_legend_left(fig, fontsize=10)
+
+    cax = fig.add_axes([0.90, 0.18, 0.02, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     fig.text(
-        0.58,
+        0.5,
         0.02,
         "Magnetic north-pole view: 12 MLT top, 00 bottom, 06 dawn right, 18 dusk left.  "
         "σφ: green = not significant; red size bins 0.1–0.6+ (blue edges).  "
@@ -852,9 +880,9 @@ def plot_mag_north_polar_tec_scint(
         color="0.35",
     )
     outfile.parent.mkdir(parents=True, exist_ok=True)
-    # Do not use bbox_inches='tight' here — it can pull the left legend
-    # back over the polar disk. Layout is already explicit in figure coords.
-    fig.savefig(outfile, dpi=200, pad_inches=0.15)
+    # Fixed figure coordinates — do not use bbox_inches='tight' (it can
+    # collapse the left legend back onto the globe).
+    fig.savefig(outfile, dpi=200)
     plt.close(fig)
     print(f"Wrote {outfile}")
     return outfile
@@ -1308,11 +1336,29 @@ def main() -> None:
         args.fig_dir
         / (
             f"phase_scintillation_tec_mlt_{args.date.isoformat()}_"
-            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
+            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}_leftlegend.png"
         ),
         mlat_outer=args.mlat_outer,
         tec_vmax=args.tec_vmax,
     )
+    # Keep a stable alias for the primary magnetic product.
+    alias = (
+        args.fig_dir
+        / (
+            f"phase_scintillation_tec_mlt_{args.date.isoformat()}_"
+            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
+        )
+    )
+    src = (
+        args.fig_dir
+        / (
+            f"phase_scintillation_tec_mlt_{args.date.isoformat()}_"
+            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}_leftlegend.png"
+        )
+    )
+    if src.exists():
+        alias.write_bytes(src.read_bytes())
+        print(f"Wrote {alias}")
 
     if args.geo_also:
         geo_csv = (
