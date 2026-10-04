@@ -588,8 +588,8 @@ def sigma_phi_marker_sizes(
     return sizes
 
 
-def add_sigma_phi_legend(ax, loc: str = "upper right") -> None:
-    """Add the reference-style discrete σφ legend."""
+def _sigma_phi_legend_handles(ax):
+    """Build empty scatter handles for the reference-style σφ legend."""
     handles = []
     for label, _low, _high, size in SIGMA_PHI_BINS:
         face = (
@@ -609,14 +609,51 @@ def add_sigma_phi_legend(ax, loc: str = "upper right") -> None:
                 label=label,
             )
         )
-    ax.legend(
+    return handles
+
+
+def add_sigma_phi_legend(
+    ax,
+    loc: str = "upper right",
+    bbox_to_anchor: tuple[float, float] | None = None,
+    fontsize: float = 8,
+) -> None:
+    """Add the reference-style discrete σφ legend on ``ax``."""
+    handles = _sigma_phi_legend_handles(ax)
+    kwargs = dict(
         handles=handles,
         loc=loc,
         frameon=True,
-        fontsize=8,
-        labelspacing=1.1,
-        borderpad=0.7,
+        fontsize=fontsize,
+        labelspacing=1.15,
+        borderpad=0.8,
         scatterpoints=1,
+        framealpha=0.95,
+        fancybox=True,
+    )
+    if bbox_to_anchor is not None:
+        kwargs["bbox_to_anchor"] = bbox_to_anchor
+        kwargs["bbox_transform"] = ax.transAxes
+    ax.legend(**kwargs)
+
+
+def add_sigma_phi_legend_left(fig, fontsize: float = 9) -> None:
+    """Place the σφ legend in the white margin left of the polar globe."""
+    leg_ax = fig.add_axes([0.015, 0.22, 0.22, 0.50])
+    leg_ax.set_axis_off()
+    handles = _sigma_phi_legend_handles(leg_ax)
+    leg_ax.legend(
+        handles=handles,
+        loc="center",
+        frameon=True,
+        fontsize=fontsize,
+        labelspacing=1.25,
+        borderpad=0.9,
+        scatterpoints=1,
+        framealpha=0.97,
+        fancybox=True,
+        title=r"$\sigma_\phi$",
+        title_fontsize=10,
     )
 
 
@@ -740,8 +777,12 @@ def plot_mag_north_polar_tec_scint(
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color="#f7f7f7")
 
-    fig = plt.figure(figsize=(9.6, 9.4), facecolor="white")
-    ax = fig.add_subplot(111, projection="polar")
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(color="#f7f7f7")
+
+    # Left white margin holds the σφ legend; title sits above the globe.
+    fig = plt.figure(figsize=(11.4, 9.8), facecolor="white")
+    ax = fig.add_axes([0.30, 0.07, 0.56, 0.76], projection="polar")
     _configure_polar_ax(ax, mlat_outer)
     # Explicit noon-at-top orientation (00 at bottom, 06 dawn right, 18 dusk left).
     ax.set_theta_zero_location("S")
@@ -769,8 +810,7 @@ def plot_mag_north_polar_tec_scint(
             th_s,
             r_s,
             scin_slice["sigma_phi"].to_numpy(),
-            add_legend=True,
-            legend_loc="upper right",
+            add_legend=False,
             zorder=10,
         )
         n_scin = len(scin_slice)
@@ -778,23 +818,32 @@ def plot_mag_north_polar_tec_scint(
     else:
         n_scin = 0
         n_sig = 0
-        add_sigma_phi_legend(ax, loc="upper right")
 
-    ax.set_title(
-        f"Phase scintillation/TEC map for {t0} - {t1}\n"
-        f"AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
-        f"CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)\n"
+    add_sigma_phi_legend_left(fig, fontsize=9)
+
+    fig.suptitle(
+        f"Phase scintillation/TEC map for {t0} - {t1}",
+        fontsize=14,
+        fontweight="bold",
+        y=0.975,
+    )
+    fig.text(
+        0.58,
+        0.925,
+        "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
+        "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)\n"
         f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  TEC samples: {len(used_times)}  ·  "
         f"mlat ≥ {mlat_outer:.0f}°",
-        fontsize=11,
-        fontweight="bold",
-        pad=16,
+        ha="center",
+        va="top",
+        fontsize=10,
     )
-    cbar = fig.colorbar(sc_tec, ax=ax, shrink=0.72, pad=0.10, extend="max")
+    cax = fig.add_axes([0.89, 0.20, 0.02, 0.52])
+    cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     fig.text(
-        0.5,
-        0.015,
+        0.58,
+        0.02,
         "Magnetic north-pole view: 12 MLT top, 00 bottom, 06 dawn right, 18 dusk left.  "
         "σφ: green = not significant; red size bins 0.1–0.6+ (blue edges).  "
         "PI: Anthea Coster.",
@@ -803,7 +852,9 @@ def plot_mag_north_polar_tec_scint(
         color="0.35",
     )
     outfile.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    # Do not use bbox_inches='tight' here — it can pull the left legend
+    # back over the polar disk. Layout is already explicit in figure coords.
+    fig.savefig(outfile, dpi=200, pad_inches=0.15)
     plt.close(fig)
     print(f"Wrote {outfile}")
     return outfile
