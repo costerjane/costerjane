@@ -1,6 +1,7 @@
 data/*.hdf5
 data/*.h5
 data/*.nc
+data/*.csv
 .venv/
 __pycache__/
 *.pyc
