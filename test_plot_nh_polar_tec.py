@@ -68,8 +68,9 @@ def test_scintillation_magnetic_overlay(scin_path: Path) -> None:
     )
     assert len(scin) > 0
     assert {"mlat", "mlon", "mlt", "sigma_phi", "s4", "site"}.issubset(scin.columns)
-    assert scin["mlat"].notna().any()
-    assert scin["mlt"].between(0.0, 24.0).all()
+    assert scin["mlat"].notna().all()
+    assert scin["mlt"].notna().all()
+    assert ((scin["mlt"] >= 0.0) & (scin["mlt"] < 24.0)).all()
 
     when = dt.datetime(2026, 1, 20, 20, 0, tzinfo=dt.timezone.utc)
     slc = tec.select_scintillation_slice(scin, when, mlat_outer=tec.MLAT_OUTER)

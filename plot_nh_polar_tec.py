@@ -315,12 +315,20 @@ def add_magnetic_coordinates(df: pd.DataFrame, height_km: float = SCIN_HEIGHT_KM
         mlat, mlon, _ = aacgmv2.convert_latlon_arr(
             lats, lons, height_km, timestamp_dt, method_code="G2A"
         )
-        mlt = aacgmv2.convert_mlt(mlon, timestamp_dt, m2a=False)
+        mlt = np.asarray(
+            aacgmv2.convert_mlt(mlon, timestamp_dt, m2a=False), dtype=np.float64
+        )
+        mlt = np.mod(mlt, 24.0)
         out.loc[mask, "mlat"] = np.asarray(mlat, dtype=np.float64)
         out.loc[mask, "mlon"] = np.asarray(mlon, dtype=np.float64)
-        out.loc[mask, "mlt"] = np.asarray(mlt, dtype=np.float64)
+        out.loc[mask, "mlt"] = mlt
 
-    print("Magnetic coordinate conversion complete")
+    before = len(out)
+    out = out[np.isfinite(out["mlat"]) & np.isfinite(out["mlt"])].reset_index(drop=True)
+    print(
+        f"Magnetic coordinate conversion complete "
+        f"(kept {len(out)} / {before} finite AACGM points)"
+    )
     return out
 
 
