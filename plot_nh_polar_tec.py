@@ -649,7 +649,7 @@ def add_sigma_phi_legend_left(fig, fontsize: float = 10) -> None:
         spine.set_color("0.35")
         spine.set_linewidth(1.0)
     leg_ax.set_facecolor("white")
-    leg_ax.set_title(r"$\sigma_\phi$ legend", fontsize=12, fontweight="bold", pad=8)
+    leg_ax.set_title(r"$\sigma_\phi$ legend", fontsize=14, fontweight="bold", pad=10)
     ys = np.linspace(0.90, 0.10, len(SIGMA_PHI_BINS))
     for y, (label, _low, _high, size) in zip(ys, SIGMA_PHI_BINS):
         face = (
@@ -805,17 +805,17 @@ def plot_mag_north_polar_tec_scint(
         f"Phase scintillation/TEC map for {t0} - {t1}",
         ha="center",
         va="top",
-        fontsize=16,
+        fontsize=20,
         fontweight="bold",
     )
     fig.text(
         0.5,
-        0.915,
+        0.910,
         "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
         "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)",
         ha="center",
         va="top",
-        fontsize=11,
+        fontsize=12,
     )
 
     ax = fig.add_axes([0.34, 0.06, 0.52, 0.78], projection="polar")
@@ -857,14 +857,14 @@ def plot_mag_north_polar_tec_scint(
 
     fig.text(
         0.5,
-        0.875,
+        0.868,
         f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  TEC samples: {len(used_times)}  ·  "
         f"mlat ≥ {mlat_outer:.0f}°",
         ha="center",
         va="top",
-        fontsize=10,
+        fontsize=11,
     )
-    add_sigma_phi_legend_left(fig, fontsize=10)
+    add_sigma_phi_legend_left(fig, fontsize=13)
 
     cax = fig.add_axes([0.90, 0.18, 0.02, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
