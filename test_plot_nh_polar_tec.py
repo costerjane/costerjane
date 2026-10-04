@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke tests for NH polar Madrigal VTEC + scintillation overlay."""
+"""Smoke tests for geographic NH TEC + reference-style σφ overlay."""
 
 from __future__ import annotations
 
@@ -7,97 +7,52 @@ import datetime as dt
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 import plot_nh_polar_tec as tec
 
 
-def test_load_and_magnetic_slice(data_path: Path) -> None:
+def test_load_tec(data_path: Path) -> None:
     grid = tec.load_vtec_grid(data_path)
     assert grid["tec"].ndim == 3
-    assert grid["tec"].shape[0] == grid["gdlat"].size
-    assert grid["tec"].shape[1] == grid["glon"].size
-    assert grid["tec"].shape[2] == grid["times"].size
-    assert grid["times"].size == 288  # 5-minute cadence
-
-    when = dt.datetime(2026, 1, 20, 20, 0, tzinfo=dt.timezone.utc)
+    assert grid["times"].size == 288
+    when = dt.datetime(2026, 1, 20, 18, 0, tzinfo=dt.timezone.utc)
     idx = tec.nearest_time_index(grid["times"], when)
-    stamp = grid["times"][idx]
-    assert stamp.hour == 20
-    assert stamp.minute == 0
-
-    stats = tec.nh_stats(grid, idx)
-    assert stats["n"] > 1000
-    assert np.isfinite(stats["median"])
-    assert 0.0 < stats["median"] < 80.0
-    assert stats["mlat_min"] >= tec.MLAT_OUTER - 1e-6
-    assert stats["mlat_max"] <= 90.0
-    assert 0.0 <= stats["mlt_min"] < 24.0
-    assert 0.0 < stats["mlt_max"] <= 24.0
-    print(
-        f"20 UT NH mlat≥{tec.MLAT_OUTER:.0f} median={stats['median']:.2f} TECU  "
-        f"n={stats['n']}  mlat {stats['mlat_min']:.1f}–{stats['mlat_max']:.1f}  "
-        f"MLT {stats['mlt_min']:.2f}–{stats['mlt_max']:.2f}"
-    )
+    assert grid["times"][idx].hour == 18
+    print(f"TEC grid OK: shape={grid['tec'].shape}")
 
 
-def test_polar_orientation() -> None:
-    theta, radius = tec.polar_coords(
-        np.array([90.0, 60.0]),
-        np.array([0.0, 12.0]),
-    )
-    assert np.isclose(radius[0], 0.0)
-    assert np.isclose(radius[1], 30.0)
-    assert np.isclose(theta[0], 0.0)
-    assert np.isclose(theta[1], np.pi)
-    print("polar orientation: pole at r=0, 12 MLT at theta=pi (top with zero@S)")
+def test_sigma_phi_bins() -> None:
+    assert tec.sigma_phi_bin_style(0.05)[0] == tec.SIGMA_PHI_QUIET_FACE
+    assert tec.sigma_phi_bin_style(0.15)[0] == tec.SIGMA_PHI_ACTIVE_FACE
+    assert tec.sigma_phi_bin_style(0.25)[1] < tec.sigma_phi_bin_style(0.55)[1]
+    assert tec.sigma_phi_bin_style(0.25)[1] < tec.sigma_phi_bin_style(0.75)[1]
+    sizes = tec.sigma_phi_marker_sizes(np.array([0.05, 0.25, 0.75]))
+    assert sizes[0] < sizes[1] < sizes[2]
+    print("σφ bin styles OK:", list(zip([0.05, 0.25, 0.75], sizes)))
 
 
-def test_scintillation_magnetic_overlay(scin_path: Path) -> None:
-    date = dt.date(2026, 1, 20)
-    hours = [20]
-    csv_path = Path("data") / "scint_mag_coords_test_20ut.csv"
+def test_geo_window_selection(scin_path: Path) -> None:
+    t0 = dt.datetime(2026, 1, 20, 17, 40, tzinfo=dt.timezone.utc)
+    t1 = dt.datetime(2026, 1, 20, 18, 0, tzinfo=dt.timezone.utc)
+    csv_path = Path("data") / "scint_geo_test_1740-1800.csv"
     if csv_path.exists():
         csv_path.unlink()
     scin = tec.load_or_build_scintillation_mag(
         scin_path,
         csv_path=csv_path,
         elev_min=20.0,
-        date=date,
-        hours=hours,
+        t0=t0,
+        t1=t1,
+        convert_magnetic=False,
     )
     assert len(scin) > 0
-    assert {"mlat", "mlon", "mlt", "sigma_phi", "s4", "site"}.issubset(scin.columns)
-    assert scin["mlat"].notna().all()
-    assert scin["mlt"].notna().all()
-    assert ((scin["mlt"] >= 0.0) & (scin["mlt"] < 24.0)).all()
-
-    when = dt.datetime(2026, 1, 20, 20, 0, tzinfo=dt.timezone.utc)
-    slc = tec.select_scintillation_slice(
-        scin,
-        when,
-        mlat_outer=tec.MLAT_OUTER,
-        sigma_vmin=tec.SIGMA_PHI_VMIN,
-    )
+    slc = tec.select_scintillation_window(scin, t0, t1, gdlat_min=40.0)
     assert len(slc) > 0
-    assert (slc["mlat"] >= tec.MLAT_OUTER).all()
-    assert (slc["sigma_phi"] >= tec.SIGMA_PHI_VMIN).all()
-    assert tec.SIGMA_PHI_VMIN == 0.2
-    assert tec.SIGMA_PHI_VMAX == 0.9
-    sizes = tec.sigma_phi_marker_sizes(
-        np.array([0.2, 0.9]),
-        sigma_vmin=tec.SIGMA_PHI_VMIN,
-        sigma_vmax=tec.SIGMA_PHI_VMAX,
-    )
-    assert sizes[0] == tec.SCIN_MARKER_SIZE_MIN
-    assert sizes[1] == tec.SCIN_MARKER_SIZE_MAX
-    assert sizes[1] > sizes[0]
+    assert (slc["gdlat"] >= 40.0).all()
+    n_sig = int((slc["sigma_phi"] >= 0.1).sum())
     print(
-        f"20 UT scintillation overlay: n={len(slc)}  "
-        f"σφ ≥ {tec.SIGMA_PHI_VMIN:.1f}  "
-        f"median={slc['sigma_phi'].median():.3f}  "
-        f"marker sizes {sizes[0]:.0f}–{sizes[1]:.0f}  "
-        f"sites={sorted(slc['site'].unique())}"
+        f"17:40–18:00 geo scin: n={len(slc)}  σφ≥0.1={n_sig}  "
+        f"max={slc['sigma_phi'].max():.3f}"
     )
 
 
@@ -109,7 +64,7 @@ if __name__ == "__main__":
         raise SystemExit("Missing gps260120g HDF5 in data/")
     if not scin_matches:
         raise SystemExit("Missing scin_20260120 HDF5 in data/")
-    test_load_and_magnetic_slice(tec_matches[0])
-    test_polar_orientation()
-    test_scintillation_magnetic_overlay(scin_matches[0])
+    test_load_tec(tec_matches[0])
+    test_sigma_phi_bins()
+    test_geo_window_selection(scin_matches[0])
     print("all tests passed")

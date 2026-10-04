@@ -5,10 +5,9 @@ Downloads CEDAR Madrigal:
   * World-wide GNSS Receiver Network VTEC (instrument 8000, kindat 3500)
   * GNSS Scintillation Network (instrument 8010, kindat 20000)
 
-Plots a north-pole view in AACGM magnetic latitude / MLT and overplots
-scintillation pierce-point σφ (phase scintillation) using the same
-magnetic conversion approach as
-``New Code for Magnetic Conversion of Scintillation.ipynb``.
+Default product is a geographic north-polar TEC heatmap with reference-style
+σφ circles (green = not significant; red sized bins 0.1–0.6+ with blue
+edges). Optional ``--magnetic-also`` also writes AACGM mlat/MLT polar panels.
 """
 
 from __future__ import annotations
@@ -42,15 +41,31 @@ SCIN_HEIGHT_KM = 250.0  # pierce_alt index 1 in Madrigal scintillation files
 PIERCE_ALT_INDEX = 1
 TEC_VMIN = 0.0
 TEC_VMAX = 50.0
-SIGMA_PHI_VMIN = 0.2
-SIGMA_PHI_VMAX = 0.9
+GEO_LAT_MIN = 40.0  # outer latitude for geographic north-polar map
 SCIN_TIME_WINDOW_MIN = 2.5  # match nearest 5-min sample
 SCIN_ELEV_MIN = 20.0
-# Matplotlib scatter sizes are area in points^2; keep these large so σφ
-# circles dominate the TEC background dots.
-SCIN_MARKER_SIZE_MIN = 180.0   # σφ = SIGMA_PHI_VMIN
-SCIN_MARKER_SIZE_MAX = 1200.0  # σφ = SIGMA_PHI_VMAX
-SCIN_MARKER_FACE = "#ff00aa"   # high-contrast magenta fill
+
+# Reference-style σφ legend bins (green = not significant; red sized by bin).
+SIGMA_PHI_EDGE = "#1f4e79"  # blue border as in the reference figure
+SIGMA_PHI_QUIET_FACE = "#2ca02c"
+SIGMA_PHI_ACTIVE_FACE = "#d62728"
+SIGMA_PHI_QUIET_THRESHOLD = 0.1
+SIGMA_PHI_BINS = [
+    # (label, low, high_exclusive_or_None, marker_size)
+    ("No significant SigmaPhi", None, SIGMA_PHI_QUIET_THRESHOLD, 22.0),
+    ("SigmaPhi 0.1 - 0.2", 0.1, 0.2, 55.0),
+    ("SigmaPhi 0.2 - 0.3", 0.2, 0.3, 110.0),
+    ("SigmaPhi 0.3 - 0.4", 0.3, 0.4, 190.0),
+    ("SigmaPhi 0.4 - 0.5", 0.4, 0.5, 290.0),
+    ("SigmaPhi 0.5 - 0.6", 0.5, 0.6, 420.0),
+    ("SigmaPhi > 0.6", 0.6, None, 600.0),
+]
+# Keep old names for CLI/tests that still mention a continuous scale.
+SIGMA_PHI_VMIN = 0.2
+SIGMA_PHI_VMAX = 0.9
+SCIN_MARKER_SIZE_MIN = SIGMA_PHI_BINS[2][3]
+SCIN_MARKER_SIZE_MAX = SIGMA_PHI_BINS[-1][3]
+SCIN_MARKER_FACE = SIGMA_PHI_ACTIVE_FACE
 
 DEFAULT_USER = os.environ.get("MADRIGAL_USER", "Anthea Coster")
 DEFAULT_EMAIL = os.environ.get("MADRIGAL_EMAIL", "costera@mit.edu")
@@ -346,9 +361,7 @@ def filter_scintillation_hours(
     """Keep scintillation samples near the requested UT hours."""
     if df.empty or not hours:
         return df
-    times = df["time"]
-    if getattr(times.dt, "tz", None) is None:
-        times = times.dt.tz_localize("UTC")
+    times = _aware_times(df["time"])
     keep = np.zeros(len(df), dtype=bool)
     for hour in hours:
         center = dt.datetime(
@@ -366,32 +379,59 @@ def filter_scintillation_hours(
     return out
 
 
+def filter_scintillation_time_range(
+    df: pd.DataFrame,
+    t0: dt.datetime,
+    t1: dt.datetime,
+) -> pd.DataFrame:
+    """Keep scintillation samples inside an absolute UTC window."""
+    if df.empty:
+        return df
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=dt.timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=dt.timezone.utc)
+    times = _aware_times(df["time"])
+    out = df.loc[(times >= t0) & (times <= t1)].reset_index(drop=True)
+    print(f"Kept {len(out)} / {len(df)} scintillation rows in {t0} – {t1}")
+    return out
+
+
+def _read_scin_csv(csv_path: Path) -> pd.DataFrame:
+    df = pd.read_csv(csv_path, parse_dates=["time"])
+    if df["time"].dt.tz is None:
+        df["time"] = df["time"].dt.tz_localize("UTC")
+    else:
+        df["time"] = df["time"].dt.tz_convert("UTC")
+    return df
+
+
 def load_or_build_scintillation_mag(
     hdf_path: Path,
     csv_path: Path | None = None,
     elev_min: float = SCIN_ELEV_MIN,
     date: dt.date | None = None,
     hours: list[int] | None = None,
+    t0: dt.datetime | None = None,
+    t1: dt.datetime | None = None,
+    convert_magnetic: bool = True,
 ) -> pd.DataFrame:
-    """Load magnetic-coordinate CSV if present, otherwise build from HDF5."""
+    """Load scintillation CSV if present, otherwise build from HDF5."""
     if csv_path is not None and csv_path.exists() and csv_path.stat().st_size > 0:
         print(f"Using existing scintillation CSV {csv_path}")
-        df = pd.read_csv(csv_path, parse_dates=["time"])
-        # Ensure timezone-aware UTC
-        if df["time"].dt.tz is None:
-            df["time"] = df["time"].dt.tz_localize("UTC")
-        else:
-            df["time"] = df["time"].dt.tz_convert("UTC")
-        return df
+        return _read_scin_csv(csv_path)
 
     df = load_scintillation_records(hdf_path)
     if elev_min is not None:
         before = len(df)
         df = df[df["elevation"] >= elev_min].reset_index(drop=True)
         print(f"Elevation ≥ {elev_min:.0f}°: kept {len(df)} / {before}")
-    if date is not None and hours:
+    if t0 is not None and t1 is not None:
+        df = filter_scintillation_time_range(df, t0, t1)
+    elif date is not None and hours:
         df = filter_scintillation_hours(df, date, hours)
-    df = add_magnetic_coordinates(df, height_km=SCIN_HEIGHT_KM)
+    if convert_magnetic:
+        df = add_magnetic_coordinates(df, height_km=SCIN_HEIGHT_KM)
     if csv_path is not None:
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(csv_path, index=False)
@@ -464,33 +504,73 @@ def _configure_polar_ax(ax, mlat_outer: float) -> None:
     ax.set_facecolor("#f7f7f7")
 
 
+def _aware_times(series: pd.Series) -> pd.Series:
+    if getattr(series.dt, "tz", None) is None:
+        return series.dt.tz_localize("UTC")
+    return series.dt.tz_convert("UTC")
+
+
+def select_scintillation_window(
+    scin: pd.DataFrame,
+    t0: dt.datetime,
+    t1: dt.datetime,
+    *,
+    gdlat_min: float | None = None,
+    mlat_min: float | None = None,
+) -> pd.DataFrame:
+    """Return scintillation rows inside ``[t0, t1]`` with finite σφ."""
+    if scin is None or scin.empty:
+        return pd.DataFrame()
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=dt.timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=dt.timezone.utc)
+    times = _aware_times(scin["time"])
+    mask = (
+        (times >= t0)
+        & (times <= t1)
+        & np.isfinite(scin["sigma_phi"])
+        & np.isfinite(scin["gdlat"])
+        & np.isfinite(scin["glon"])
+    )
+    if gdlat_min is not None:
+        mask &= scin["gdlat"] >= gdlat_min
+    if mlat_min is not None:
+        mask &= np.isfinite(scin["mlat"]) & np.isfinite(scin["mlt"])
+        mask &= scin["mlat"] >= mlat_min
+    return scin.loc[mask].copy()
+
+
 def select_scintillation_slice(
     scin: pd.DataFrame,
     when: dt.datetime,
     mlat_outer: float = MLAT_OUTER,
     window_min: float = SCIN_TIME_WINDOW_MIN,
-    sigma_vmin: float = SIGMA_PHI_VMIN,
+    sigma_vmin: float = 0.0,
 ) -> pd.DataFrame:
-    """Return NH scintillation rows near ``when`` with σφ in the plot range."""
-    if scin is None or scin.empty:
-        return pd.DataFrame()
+    """Return NH magnetic scintillation rows near ``when``."""
     if when.tzinfo is None:
         when = when.replace(tzinfo=dt.timezone.utc)
     t0 = when - dt.timedelta(minutes=window_min)
     t1 = when + dt.timedelta(minutes=window_min)
-    times = scin["time"]
-    if getattr(times.dt, "tz", None) is None:
-        times = times.dt.tz_localize("UTC")
-    slc = scin[
-        (times >= t0)
-        & (times <= t1)
-        & np.isfinite(scin["mlat"])
-        & np.isfinite(scin["mlt"])
-        & np.isfinite(scin["sigma_phi"])
-        & (scin["mlat"] >= mlat_outer)
-        & (scin["sigma_phi"] >= sigma_vmin)
-    ].copy()
+    slc = select_scintillation_window(scin, t0, t1, mlat_min=mlat_outer)
+    if sigma_vmin > 0 and not slc.empty:
+        slc = slc[slc["sigma_phi"] >= sigma_vmin].copy()
     return slc
+
+
+def sigma_phi_bin_style(sigma_phi: float) -> tuple[str, float, str]:
+    """Return (face_color, size, label) for one σφ value using reference bins."""
+    for label, low, high, size in SIGMA_PHI_BINS:
+        if low is None:
+            if sigma_phi < high:
+                return SIGMA_PHI_QUIET_FACE, size, label
+        elif high is None:
+            if sigma_phi >= low:
+                return SIGMA_PHI_ACTIVE_FACE, size, label
+        elif low <= sigma_phi < high:
+            return SIGMA_PHI_ACTIVE_FACE, size, label
+    return SIGMA_PHI_ACTIVE_FACE, SIGMA_PHI_BINS[-1][3], SIGMA_PHI_BINS[-1][0]
 
 
 def sigma_phi_marker_sizes(
@@ -498,83 +578,243 @@ def sigma_phi_marker_sizes(
     sigma_vmin: float = SIGMA_PHI_VMIN,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ) -> np.ndarray:
-    """Map σφ in [vmin, vmax] to large filled-circle areas."""
-    span = max(sigma_vmax - sigma_vmin, 1e-6)
-    frac = np.clip((np.asarray(sigma_phi, dtype=np.float64) - sigma_vmin) / span, 0.0, 1.0)
-    return SCIN_MARKER_SIZE_MIN + frac * (SCIN_MARKER_SIZE_MAX - SCIN_MARKER_SIZE_MIN)
+    """Map σφ values to reference-style discrete marker sizes."""
+    del sigma_vmin, sigma_vmax  # discrete bins; kept for call-site compatibility
+    values = np.asarray(sigma_phi, dtype=np.float64)
+    sizes = np.empty(values.shape, dtype=np.float64)
+    for i, val in enumerate(values.ravel()):
+        sizes.ravel()[i] = sigma_phi_bin_style(float(val))[1]
+    return sizes
+
+
+def add_sigma_phi_legend(ax, loc: str = "upper right") -> None:
+    """Add the reference-style discrete σφ legend."""
+    handles = []
+    for label, _low, _high, size in SIGMA_PHI_BINS:
+        face = (
+            SIGMA_PHI_QUIET_FACE
+            if label.startswith("No significant")
+            else SIGMA_PHI_ACTIVE_FACE
+        )
+        handles.append(
+            ax.scatter(
+                [],
+                [],
+                s=size,
+                marker="o",
+                facecolors=face,
+                edgecolors=SIGMA_PHI_EDGE,
+                linewidths=1.1,
+                label=label,
+            )
+        )
+    ax.legend(
+        handles=handles,
+        loc=loc,
+        frameon=True,
+        fontsize=8,
+        labelspacing=1.1,
+        borderpad=0.7,
+        scatterpoints=1,
+    )
+
+
+def overplot_sigma_phi_binned(
+    ax,
+    x: np.ndarray,
+    y: np.ndarray,
+    sigma_phi: np.ndarray,
+    *,
+    transform=None,
+    add_legend: bool = False,
+    legend_loc: str = "upper right",
+    zorder: int = 20,
+):
+    """Plot reference-style filled σφ circles (green quiet / red sized bins)."""
+    if len(sigma_phi) == 0:
+        return None
+    faces = []
+    sizes = []
+    for val in np.asarray(sigma_phi, dtype=np.float64):
+        face, size, _ = sigma_phi_bin_style(float(val))
+        faces.append(face)
+        sizes.append(size)
+    kwargs = dict(
+        s=np.asarray(sizes),
+        marker="o",
+        c=faces,
+        edgecolors=SIGMA_PHI_EDGE,
+        linewidths=1.2,
+        alpha=0.95,
+        zorder=zorder,
+        clip_on=True,
+    )
+    if transform is not None:
+        kwargs["transform"] = transform
+    sc = ax.scatter(x, y, **kwargs)
+    if add_legend:
+        add_sigma_phi_legend(ax, loc=legend_loc)
+    return sc
 
 
 def overplot_scintillation(
     ax,
     scin_slice: pd.DataFrame,
-    sigma_vmin: float = SIGMA_PHI_VMIN,
+    sigma_vmin: float = 0.0,
     sigma_vmax: float = SIGMA_PHI_VMAX,
     add_size_legend: bool = False,
 ):
-    """Scatter elevated σφ as large filled circles; size encodes σφ."""
+    """Overplot σφ on a magnetic polar axis using the reference circle style."""
+    del sigma_vmax
     if scin_slice is None or scin_slice.empty:
         return None
-    theta, radius = polar_coords(
-        scin_slice["mlat"].to_numpy(), scin_slice["mlt"].to_numpy()
-    )
-    values = scin_slice["sigma_phi"].to_numpy(dtype=np.float64)
-    sizes = sigma_phi_marker_sizes(values, sigma_vmin=sigma_vmin, sigma_vmax=sigma_vmax)
-    sc = ax.scatter(
+    slc = scin_slice
+    if sigma_vmin > 0:
+        slc = slc[slc["sigma_phi"] >= sigma_vmin]
+    if slc.empty:
+        return None
+    theta, radius = polar_coords(slc["mlat"].to_numpy(), slc["mlt"].to_numpy())
+    return overplot_sigma_phi_binned(
+        ax,
         theta,
         radius,
-        c=values,
-        s=sizes,
-        marker="o",
-        cmap="plasma",
-        norm=Normalize(vmin=sigma_vmin, vmax=sigma_vmax),
-        edgecolors="black",
-        linewidths=1.4,
-        alpha=1.0,
-        zorder=20,
-        clip_on=False,
+        slc["sigma_phi"].to_numpy(),
+        add_legend=add_size_legend,
+        legend_loc="upper left",
     )
-    # Reinforce with an opaque magenta outline ring so circles stay visible
-    # even when the plasma fill blends with high-TEC reds/yellows.
-    ax.scatter(
-        theta,
-        radius,
-        s=sizes * 1.15,
-        marker="o",
-        facecolors="none",
-        edgecolors=SCIN_MARKER_FACE,
-        linewidths=2.2,
-        zorder=21,
-        clip_on=False,
+
+
+def mean_tec_slice(
+    grid: dict, t0: dt.datetime, t1: dt.datetime
+) -> tuple[np.ndarray, list[dt.datetime]]:
+    """Mean VTEC over all 5-min samples inside ``[t0, t1]``."""
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=dt.timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=dt.timezone.utc)
+    idxs = [
+        i
+        for i, stamp in enumerate(grid["times"])
+        if t0 <= stamp <= t1
+    ]
+    if not idxs:
+        idx = nearest_time_index(grid["times"], t0)
+        idxs = [idx]
+    stack = np.stack([grid["tec"][:, :, i] for i in idxs], axis=-1)
+    with np.errstate(all="ignore"):
+        mean = np.nanmean(stack, axis=-1)
+    used = [grid["times"][i] for i in idxs]
+    return mean, used
+
+
+def plot_geo_north_polar_tec_scint(
+    grid: dict,
+    scin: pd.DataFrame | None,
+    t0: dt.datetime,
+    t1: dt.datetime,
+    outfile: Path,
+    lat_min: float = GEO_LAT_MIN,
+    tec_vmax: float = TEC_VMAX,
+) -> Path:
+    """Geographic north-polar TEC heatmap + reference-style σφ circles."""
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=dt.timezone.utc)
+    if t1.tzinfo is None:
+        t1 = t1.replace(tzinfo=dt.timezone.utc)
+
+    tec_mean, used_times = mean_tec_slice(grid, t0, t1)
+    lon_edges = np.concatenate([grid["glon"] - 0.5, grid["glon"][-1:] + 0.5])
+    lat_edges = np.concatenate([grid["gdlat"] - 0.5, grid["gdlat"][-1:] + 0.5])
+
+    proj = ccrs.NorthPolarStereo(central_longitude=0.0)
+    fig = plt.figure(figsize=(9.5, 9.2), facecolor="white")
+    ax = fig.add_subplot(111, projection=proj)
+    ax.set_extent([-180, 180, lat_min, 90], crs=ccrs.PlateCarree())
+    try:
+        # Circular map boundary like the reference figure.
+        import matplotlib.path as mpath
+
+        theta = np.linspace(0, 2 * np.pi, 361)
+        center, radius = [0.5, 0.5], 0.5
+        verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+        circle = mpath.Path(verts * radius + center)
+        ax.set_boundary(circle, transform=ax.transAxes)
+    except Exception:
+        pass
+
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad(alpha=0.0)
+    mesh = ax.pcolormesh(
+        lon_edges,
+        lat_edges,
+        np.ma.masked_invalid(tec_mean),
+        transform=ccrs.PlateCarree(),
+        cmap=cmap,
+        norm=Normalize(vmin=TEC_VMIN, vmax=tec_vmax),
+        shading="flat",
+        zorder=1,
     )
-    if add_size_legend:
-        legend_vals = np.array([sigma_vmin, 0.5 * (sigma_vmin + sigma_vmax), sigma_vmax])
-        handles = []
-        for val in legend_vals:
-            handles.append(
-                ax.scatter(
-                    [],
-                    [],
-                    s=float(sigma_phi_marker_sizes([val], sigma_vmin, sigma_vmax)[0]),
-                    marker="o",
-                    facecolors=SCIN_MARKER_FACE,
-                    edgecolors="black",
-                    linewidths=1.2,
-                    label=f"{val:.1f}",
-                )
-            )
-        ax.legend(
-            handles=handles,
-            title=r"$\sigma_\phi$",
-            loc="upper left",
-            bbox_to_anchor=(1.18, 1.05),
-            frameon=True,
-            fontsize=8,
-            title_fontsize=9,
-            labelspacing=1.4,
-            borderpad=0.8,
-            scatterpoints=1,
+    ax.add_feature(cfeature.COASTLINE.with_scale("110m"), linewidth=0.7, edgecolor="k", zorder=3)
+    ax.add_feature(cfeature.BORDERS.with_scale("110m"), linewidth=0.3, edgecolor="0.3", zorder=3)
+    gl = ax.gridlines(
+        draw_labels=False,
+        xlocs=range(-180, 181, 30),
+        ylocs=range(int(lat_min), 91, 10),
+        linewidth=0.6,
+        color="0.55",
+        alpha=0.85,
+        linestyle="--",
+        zorder=4,
+    )
+    del gl
+
+    scin_slice = select_scintillation_window(scin, t0, t1, gdlat_min=lat_min)
+    if scin_slice is not None and not scin_slice.empty:
+        overplot_sigma_phi_binned(
+            ax,
+            scin_slice["glon"].to_numpy(),
+            scin_slice["gdlat"].to_numpy(),
+            scin_slice["sigma_phi"].to_numpy(),
+            transform=ccrs.PlateCarree(),
+            add_legend=True,
+            legend_loc="upper right",
+            zorder=10,
         )
-    return sc
+        n_scin = len(scin_slice)
+        n_sig = int((scin_slice["sigma_phi"] >= SIGMA_PHI_QUIET_THRESHOLD).sum())
+    else:
+        n_scin = 0
+        n_sig = 0
+        add_sigma_phi_legend(ax, loc="upper right")
+
+    ax.set_title(
+        f"Phase scintillation/TEC map for {t0} - {t1}\n"
+        f"CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)  ·  "
+        f"n_scin={n_scin} (σφ≥0.1: {n_sig})  ·  "
+        f"TEC samples: {len(used_times)}",
+        fontsize=11,
+        fontweight="bold",
+        pad=12,
+    )
+    cbar = fig.colorbar(mesh, ax=ax, shrink=0.72, pad=0.06, extend="max")
+    cbar.set_label("Vertical TEC (TECU)", fontsize=11)
+    fig.text(
+        0.5,
+        0.02,
+        "North-polar geographic map.  σφ circles: green = not significant; "
+        "red size bins follow 0.1–0.6+ (blue edges).  PI: Anthea Coster.",
+        ha="center",
+        fontsize=8,
+        color="0.35",
+    )
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(outfile, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {outfile}")
+    return outfile
 
 
 def plot_nh_polar_snapshot(
@@ -584,7 +824,7 @@ def plot_nh_polar_snapshot(
     scin: pd.DataFrame | None = None,
     mlat_outer: float = MLAT_OUTER,
     tec_vmax: float = TEC_VMAX,
-    sigma_vmin: float = SIGMA_PHI_VMIN,
+    sigma_vmin: float = 0.0,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ) -> Path:
     idx = nearest_time_index(grid["times"], when)
@@ -634,10 +874,6 @@ def plot_nh_polar_snapshot(
     cbar = fig.colorbar(sc_tec, ax=ax, pad=0.08, shrink=0.72, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     cbar.ax.tick_params(labelsize=9)
-    if sc_scin is not None:
-        cbar2 = fig.colorbar(sc_scin, ax=ax, pad=0.02, shrink=0.72, extend="both")
-        cbar2.set_label(r"Phase scintillation $\sigma_\phi$ (rad)", fontsize=11)
-        cbar2.ax.tick_params(labelsize=9)
 
     finite = tec[nh]
     n_scin = 0 if scin_slice is None else len(scin_slice)
@@ -649,13 +885,14 @@ def plot_nh_polar_snapshot(
         f"{stamp:%d %B %Y  %H:%M} UT   |   CEDAR Madrigal / MIT Haystack\n"
         f"AACGM magnetic latitude & MLT   ·   looking down on magnetic north pole\n"
         f"TEC median {np.median(finite):.1f} TECU   ·   "
-        f"σφ circles ≥ {sigma_vmin:.1f} (n={n_scin}, scale {sigma_vmin:.1f}–{sigma_vmax:.1f})"
+        f"σφ circles (reference bins) n={n_scin}"
         + (f"   ·   median σφ {med_sig:.2f}" if n_scin else "")
         + f"   ·   mlat ≥ {mlat_outer:.0f}°",
         fontsize=11,
         fontweight="bold",
         pad=18,
     )
+    del sigma_vmin, sigma_vmax, sc_scin
     fig.text(
         0.5,
         0.012,
@@ -682,7 +919,7 @@ def plot_nh_polar_panels(
     scin: pd.DataFrame | None = None,
     mlat_outer: float = MLAT_OUTER,
     tec_vmax: float = TEC_VMAX,
-    sigma_vmin: float = SIGMA_PHI_VMIN,
+    sigma_vmin: float = 0.0,
     sigma_vmax: float = SIGMA_PHI_VMAX,
 ) -> Path:
     cmap = plt.get_cmap("turbo").copy()
@@ -695,8 +932,7 @@ def plot_nh_polar_panels(
     fig.suptitle(
         f"GNSS VTEC + scintillation — Northern Hemisphere (magnetic)\n"
         f"{date:%d %B %Y}  |  CEDAR Madrigal · AACGM mlat / MLT · "
-        f"σφ circles {sigma_vmin:.1f}–{sigma_vmax:.1f} "
-        f"(pierce {SCIN_HEIGHT_KM:.0f} km)",
+        f"σφ reference-style bins (pierce {SCIN_HEIGHT_KM:.0f} km)",
         fontsize=13,
         fontweight="bold",
         y=0.995,
@@ -756,20 +992,18 @@ def plot_nh_polar_panels(
         )
 
     fig.subplots_adjust(
-        left=0.04, right=0.84, top=0.88, bottom=0.06, wspace=0.25, hspace=0.30
+        left=0.04, right=0.90, top=0.88, bottom=0.06, wspace=0.25, hspace=0.30
     )
-    cax = fig.add_axes([0.86, 0.20, 0.016, 0.55])
+    cax = fig.add_axes([0.92, 0.20, 0.016, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
-    if sc_scin is not None:
-        cax2 = fig.add_axes([0.93, 0.20, 0.016, 0.55])
-        cbar2 = fig.colorbar(sc_scin, cax=cax2, extend="both")
-        cbar2.set_label(r"$\sigma_\phi$ (rad)", fontsize=11)
+    del sc_scin, sigma_vmin, sigma_vmax
     fig.text(
         0.04,
         0.015,
         "Looking down on magnetic north pole: 12 MLT at top, 00 at bottom, "
         "06 dawn right, 18 dusk left.  "
+        "σφ: green = not significant; red sized bins 0.1–0.6+.  "
         "TEC: 8000/3500.  Scintillation: 8010/20000.  PI: Anthea Coster.",
         fontsize=7.5,
         color="0.35",
@@ -812,20 +1046,29 @@ def main() -> None:
     parser.add_argument("--data-dir", default="data", type=Path)
     parser.add_argument("--fig-dir", default="figures", type=Path)
     parser.add_argument(
+        "--window-start",
+        default="17:40",
+        help="UT start HH:MM for the geographic reference-style map",
+    )
+    parser.add_argument(
+        "--window-end",
+        default="18:00",
+        help="UT end HH:MM for the geographic reference-style map",
+    )
+    parser.add_argument(
         "--hours",
         default="0,6,12,18",
-        help="Comma-separated UT hours for the multi-panel figure",
+        help="Comma-separated UT hours for magnetic multi-panel figure",
     )
     parser.add_argument(
         "--snapshot-hour",
-        default=20,
+        default=18,
         type=int,
-        help="UT hour for the single polar snapshot",
+        help="UT hour for the magnetic polar snapshot",
     )
     parser.add_argument("--mlat-outer", default=MLAT_OUTER, type=float)
+    parser.add_argument("--lat-min", default=GEO_LAT_MIN, type=float)
     parser.add_argument("--tec-vmax", default=TEC_VMAX, type=float)
-    parser.add_argument("--sigma-vmin", default=SIGMA_PHI_VMIN, type=float)
-    parser.add_argument("--sigma-vmax", default=SIGMA_PHI_VMAX, type=float)
     parser.add_argument("--elev-min", default=SCIN_ELEV_MIN, type=float)
     parser.add_argument("--user", default=DEFAULT_USER)
     parser.add_argument("--email", default=DEFAULT_EMAIL)
@@ -835,6 +1078,11 @@ def main() -> None:
         "--skip-scintillation",
         action="store_true",
         help="Plot TEC only (no scintillation download/overlay)",
+    )
+    parser.add_argument(
+        "--magnetic-also",
+        action="store_true",
+        help="Also write AACGM mlat/MLT polar panels/snapshot",
     )
     args = parser.parse_args()
 
@@ -864,53 +1112,87 @@ def main() -> None:
             )
 
     grid = load_vtec_grid(tec_path)
-    hours = [int(h.strip()) for h in args.hours.split(",") if h.strip()]
-    plot_hours = sorted(set(hours + [args.snapshot_hour]))
+    start_h, start_m = [int(x) for x in args.window_start.split(":")]
+    end_h, end_m = [int(x) for x in args.window_end.split(":")]
+    t0 = dt.datetime(
+        args.date.year, args.date.month, args.date.day,
+        start_h, start_m, tzinfo=dt.timezone.utc,
+    )
+    t1 = dt.datetime(
+        args.date.year, args.date.month, args.date.day,
+        end_h, end_m, tzinfo=dt.timezone.utc,
+    )
 
     scin = None
     if scin_path is not None:
         csv_path = (
             args.data_dir
-            / f"scint_mag_coords_{args.date.isoformat()}_hours-{'-'.join(map(str, plot_hours))}.csv"
+            / f"scint_geo_{args.date.isoformat()}_{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.csv"
         )
         scin = load_or_build_scintillation_mag(
             scin_path,
             csv_path=csv_path,
             elev_min=args.elev_min,
-            date=args.date,
-            hours=plot_hours,
+            t0=t0,
+            t1=t1,
+            convert_magnetic=False,
         )
 
-    plot_nh_polar_panels(
+    plot_geo_north_polar_tec_scint(
         grid,
-        hours,
-        args.date,
-        args.fig_dir / f"nh_polar_tec_{args.date.isoformat()}_panels.png",
-        scin=scin,
-        mlat_outer=args.mlat_outer,
-        tec_vmax=args.tec_vmax,
-        sigma_vmin=args.sigma_vmin,
-        sigma_vmax=args.sigma_vmax,
-    )
-    when = dt.datetime(
-        args.date.year,
-        args.date.month,
-        args.date.day,
-        args.snapshot_hour,
-        0,
-        tzinfo=dt.timezone.utc,
-    )
-    plot_nh_polar_snapshot(
-        grid,
-        when,
+        scin,
+        t0,
+        t1,
         args.fig_dir
-        / f"nh_polar_tec_{args.date.isoformat()}_{args.snapshot_hour:02d}ut.png",
-        scin=scin,
-        sigma_vmin=args.sigma_vmin,
-        mlat_outer=args.mlat_outer,
+        / (
+            f"phase_scintillation_tec_{args.date.isoformat()}_"
+            f"{start_h:02d}{start_m:02d}-{end_h:02d}{end_m:02d}.png"
+        ),
+        lat_min=args.lat_min,
         tec_vmax=args.tec_vmax,
-        sigma_vmax=args.sigma_vmax,
     )
+
+    if args.magnetic_also:
+        hours = [int(h.strip()) for h in args.hours.split(",") if h.strip()]
+        plot_hours = sorted(set(hours + [args.snapshot_hour]))
+        mag_csv = (
+            args.data_dir
+            / f"scint_mag_coords_{args.date.isoformat()}_hours-{'-'.join(map(str, plot_hours))}.csv"
+        )
+        scin_mag = load_or_build_scintillation_mag(
+            scin_path,
+            csv_path=mag_csv,
+            elev_min=args.elev_min,
+            date=args.date,
+            hours=plot_hours,
+            convert_magnetic=True,
+        )
+        plot_nh_polar_panels(
+            grid,
+            hours,
+            args.date,
+            args.fig_dir / f"nh_polar_tec_{args.date.isoformat()}_panels.png",
+            scin=scin_mag,
+            mlat_outer=args.mlat_outer,
+            tec_vmax=args.tec_vmax,
+        )
+        when = dt.datetime(
+            args.date.year,
+            args.date.month,
+            args.date.day,
+            args.snapshot_hour,
+            0,
+            tzinfo=dt.timezone.utc,
+        )
+        plot_nh_polar_snapshot(
+            grid,
+            when,
+            args.fig_dir
+            / f"nh_polar_tec_{args.date.isoformat()}_{args.snapshot_hour:02d}ut.png",
+            scin=scin_mag,
+            mlat_outer=args.mlat_outer,
+            tec_vmax=args.tec_vmax,
+        )
 
 
 if __name__ == "__main__":
