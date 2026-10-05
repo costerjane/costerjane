@@ -637,10 +637,9 @@ def add_sigma_phi_legend(
     ax.legend(**kwargs)
 
 
-def add_sigma_phi_legend_left(fig, fontsize: float = 35) -> None:
+def add_sigma_phi_legend_left(fig, fontsize: float = 13) -> None:
     """Draw σφ legend in a dedicated white panel left of the polar globe."""
-    # Wide left panel so 35 pt bold labels fit without overlapping the globe.
-    leg_ax = fig.add_axes([0.01, 0.08, 0.36, 0.70])
+    leg_ax = fig.add_axes([0.03, 0.18, 0.26, 0.55])
     leg_ax.set_xlim(0, 1)
     leg_ax.set_ylim(0, 1)
     leg_ax.set_xticks([])
@@ -648,32 +647,30 @@ def add_sigma_phi_legend_left(fig, fontsize: float = 35) -> None:
     for spine in leg_ax.spines.values():
         spine.set_visible(True)
         spine.set_color("0.35")
-        spine.set_linewidth(1.2)
+        spine.set_linewidth(1.0)
     leg_ax.set_facecolor("white")
     leg_ax.set_title(
-        r"$\sigma_\phi$ legend", fontsize=fontsize, fontweight="bold", pad=12
+        r"$\sigma_\phi$ legend", fontsize=fontsize, fontweight="bold", pad=10
     )
-    ys = np.linspace(0.88, 0.08, len(SIGMA_PHI_BINS))
+    ys = np.linspace(0.90, 0.10, len(SIGMA_PHI_BINS))
     for y, (label, _low, _high, size) in zip(ys, SIGMA_PHI_BINS):
         face = (
             SIGMA_PHI_QUIET_FACE
             if label.startswith("No significant")
             else SIGMA_PHI_ACTIVE_FACE
         )
-        # Scale marker size with the large legend font so symbols stay readable.
-        marker_size = max(size * 1.8, 80.0)
         leg_ax.scatter(
-            [0.08],
+            [0.12],
             [y],
-            s=marker_size,
+            s=size,
             marker="o",
             facecolors=face,
             edgecolors=SIGMA_PHI_EDGE,
-            linewidths=1.4,
+            linewidths=1.2,
             clip_on=False,
         )
         leg_ax.text(
-            0.18,
+            0.24,
             y,
             label,
             va="center",
@@ -803,44 +800,41 @@ def plot_mag_north_polar_tec_scint(
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(color="#f7f7f7")
 
-    cmap = plt.get_cmap("viridis").copy()
-    cmap.set_bad(color="#f7f7f7")
-
     # Explicit figure layout:
     #   - title block at top of the figure
     #   - boxed σφ legend in left white panel
     #   - polar globe shifted right
     #   - TEC colorbar on the right
-    fig = plt.figure(figsize=(18.0, 13.0), facecolor="white")
+    fig = plt.figure(figsize=(12.5, 10.2), facecolor="white")
     fig.text(
         0.5,
-        0.985,
+        0.965,
         "Phase scintillation/TEC map",
         ha="center",
         va="top",
-        fontsize=35,
+        fontsize=20,
         fontweight="bold",
     )
     fig.text(
         0.5,
-        0.945,
+        0.925,
         f"{t0} - {t1}",
         ha="center",
         va="top",
-        fontsize=35,
+        fontsize=20,
         fontweight="bold",
     )
     fig.text(
         0.5,
-        0.895,
+        0.885,
         "AACGM magnetic latitude & MLT  ·  12 MLT at top  ·  "
         "CEDAR Madrigal TEC (8000/3500) + scintillation (8010/20000)",
         ha="center",
         va="top",
-        fontsize=14,
+        fontsize=11,
     )
 
-    ax = fig.add_axes([0.42, 0.04, 0.46, 0.72], projection="polar")
+    ax = fig.add_axes([0.34, 0.06, 0.52, 0.74], projection="polar")
     _configure_polar_ax(ax, mlat_outer)
     # Explicit noon-at-top orientation (00 at bottom, 06 dawn right, 18 dusk left).
     ax.set_theta_zero_location("S")
@@ -884,11 +878,11 @@ def plot_mag_north_polar_tec_scint(
         f"mlat ≥ {mlat_outer:.0f}°",
         ha="center",
         va="top",
-        fontsize=13,
+        fontsize=10,
     )
-    add_sigma_phi_legend_left(fig, fontsize=35)
+    add_sigma_phi_legend_left(fig, fontsize=13)
 
-    cax = fig.add_axes([0.91, 0.16, 0.02, 0.55])
+    cax = fig.add_axes([0.90, 0.18, 0.02, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
     fig.text(
