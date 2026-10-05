@@ -1125,18 +1125,18 @@ def plot_nh_polar_panels(
     n = len(hours)
     ncols = 2 if n > 1 else 1
     nrows = int(np.ceil(n / ncols))
-    fig = plt.figure(figsize=(12.0, 5.4 * nrows + 0.6), facecolor="white")
+    # Extra vertical space so panel titles sit clear of the top "12" MLT label.
+    fig = plt.figure(figsize=(12.5, 6.2 * nrows + 0.8), facecolor="white")
     fig.suptitle(
         f"GNSS VTEC + scintillation — Northern Hemisphere (magnetic)\n"
         f"{date:%d %B %Y}  |  CEDAR Madrigal · AACGM mlat / MLT · "
         f"σφ reference-style bins (pierce {SCIN_HEIGHT_KM:.0f} km)",
-        fontsize=13,
+        fontsize=14,
         fontweight="bold",
-        y=0.995,
+        y=0.98,
     )
 
     sc_tec = None
-    sc_scin = None
     for i, hour in enumerate(hours):
         when = dt.datetime(
             date.year, date.month, date.day, hour, 0, tzinfo=dt.timezone.utc
@@ -1155,6 +1155,8 @@ def plot_nh_polar_panels(
 
         ax = fig.add_subplot(nrows, ncols, i + 1, projection="polar")
         _configure_polar_ax(ax, mlat_outer)
+        # Keep MLT tick labels, but shrink them so they don't collide with titles.
+        ax.tick_params(axis="x", labelsize=8, pad=2)
         sc_tec = ax.scatter(
             theta[nh],
             radius[nh],
@@ -1169,32 +1171,32 @@ def plot_nh_polar_panels(
         scin_slice = select_scintillation_slice(
             scin, stamp, mlat_outer=mlat_outer, sigma_vmin=sigma_vmin
         )
-        sc = overplot_scintillation(
+        overplot_scintillation(
             ax,
             scin_slice,
             sigma_vmin=sigma_vmin,
             sigma_vmax=sigma_vmax,
             add_size_legend=False,
         )
-        if sc is not None:
-            sc_scin = sc
         finite = tec[nh]
         n_scin = 0 if scin_slice is None else len(scin_slice)
+        # Two-line title, large pad: clears the polar "12" MLT label at top.
         ax.set_title(
-            f"{stamp:%H:%M} UT   ·   TEC median {np.median(finite):.1f}   ·   "
-            f"n_σφ≥{sigma_vmin:.1f}={n_scin}",
-            fontsize=10,
+            f"{stamp:%H:%M} UT\n"
+            f"TEC median {np.median(finite):.1f}  ·  n_σφ≥{sigma_vmin:.1f} = {n_scin}",
+            fontsize=14,
             fontweight="bold",
-            pad=12,
+            pad=32,
+            linespacing=1.4,
         )
 
     fig.subplots_adjust(
-        left=0.04, right=0.90, top=0.88, bottom=0.06, wspace=0.25, hspace=0.30
+        left=0.04, right=0.90, top=0.86, bottom=0.06, wspace=0.22, hspace=0.42
     )
     cax = fig.add_axes([0.92, 0.20, 0.016, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
     cbar.set_label("Vertical TEC (TECU)", fontsize=11)
-    del sc_scin, sigma_vmin, sigma_vmax
+    del sigma_vmin, sigma_vmax
     fig.text(
         0.04,
         0.015,
