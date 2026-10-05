@@ -1125,15 +1125,16 @@ def plot_nh_polar_panels(
     n = len(hours)
     ncols = 2 if n > 1 else 1
     nrows = int(np.ceil(n / ncols))
-    # Extra vertical space so panel titles sit clear of the top "12" MLT label.
-    fig = plt.figure(figsize=(12.5, 6.2 * nrows + 0.8), facecolor="white")
+    # Extra vertical room: short UT title above each panel; stats sit below
+    # so they never fight the polar "12" MLT tick at the top rim.
+    fig = plt.figure(figsize=(12.5, 6.6 * nrows + 0.9), facecolor="white")
     fig.suptitle(
         f"GNSS VTEC + scintillation — Northern Hemisphere (magnetic)\n"
         f"{date:%d %B %Y}  |  CEDAR Madrigal · AACGM mlat / MLT · "
         f"σφ reference-style bins (pierce {SCIN_HEIGHT_KM:.0f} km)",
         fontsize=14,
         fontweight="bold",
-        y=0.98,
+        y=0.985,
     )
 
     sc_tec = None
@@ -1155,8 +1156,14 @@ def plot_nh_polar_panels(
 
         ax = fig.add_subplot(nrows, ncols, i + 1, projection="polar")
         _configure_polar_ax(ax, mlat_outer)
-        # Keep MLT tick labels, but shrink them so they don't collide with titles.
-        ax.tick_params(axis="x", labelsize=8, pad=2)
+        # Drop the top "12" MLT label — it collides with panel titles; noon
+        # remains at top via the polar orientation (footer explains layout).
+        ax.set_xticklabels(
+            ["00", "03", "06", "09", "", "15", "18", "21"],
+            fontsize=9,
+            fontweight="bold",
+        )
+        ax.tick_params(axis="x", labelsize=9, pad=4)
         sc_tec = ax.scatter(
             theta[nh],
             radius[nh],
@@ -1180,18 +1187,29 @@ def plot_nh_polar_panels(
         )
         finite = tec[nh]
         n_scin = 0 if scin_slice is None else len(scin_slice)
-        # Two-line title, large pad: clears the polar "12" MLT label at top.
+        # Short title only (no second line near the polar rim).
         ax.set_title(
-            f"{stamp:%H:%M} UT\n"
-            f"TEC median {np.median(finite):.1f}  ·  n_σφ≥{sigma_vmin:.1f} = {n_scin}",
-            fontsize=14,
+            f"{stamp:%H:%M} UT",
+            fontsize=16,
             fontweight="bold",
-            pad=32,
-            linespacing=1.4,
+            pad=14,
+        )
+        # Stats below the circle — clear of all MLT tick labels.
+        ax.text(
+            0.5,
+            -0.14,
+            f"TEC median {np.median(finite):.1f} TECU"
+            f"   ·   n_σφ≥{sigma_vmin:.1f} = {n_scin}",
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=12,
+            fontweight="bold",
+            clip_on=False,
         )
 
     fig.subplots_adjust(
-        left=0.04, right=0.90, top=0.86, bottom=0.06, wspace=0.22, hspace=0.42
+        left=0.04, right=0.90, top=0.90, bottom=0.08, wspace=0.28, hspace=0.48
     )
     cax = fig.add_axes([0.92, 0.20, 0.016, 0.55])
     cbar = fig.colorbar(sc_tec, cax=cax, extend="max")
