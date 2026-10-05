@@ -1,0 +1,7 @@
+madrigalWeb
+h5py
+numpy
+matplotlib
+aacgmv2
+pandas
+cartopy
