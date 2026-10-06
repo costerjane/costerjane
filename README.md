@@ -19,6 +19,17 @@ covers **11 September 2023 – 24 May 2024**. There is no phone map for
 python3 plot_merged_tec_movie.py --date 2024-05-12
 ```
 
+If the Madrigal HDF5 and phone CSV are already on disk, skip the downloads:
+
+```bash
+python3 plot_merged_tec_movie.py --date 2024-05-12 --input-dir /path/to/tec_files
+```
+
+Expected filenames (the folder, `data/`, or `phone_tec/` are all searched):
+
+- Madrigal GNSS TEC: `gps240512g.hdf5` or `gps240512g.003.hdf5`
+- Phone VTEC: `vtec_2024_05_12.csv.gz` (uncompressed `.csv` also works)
+
 Outputs in `figures/`:
 
 - `merged_tec_2024-05-12_global.mp4` — 144 frames, 10 min cadence, 8 fps

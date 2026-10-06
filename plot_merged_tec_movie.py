@@ -83,6 +83,125 @@ def phone_vtec_url(date: dt.date) -> str:
     )
 
 
+def madrigal_vtec_patterns(date: dt.date) -> tuple[str, ...]:
+    yymmdd = f"{date:%y%m%d}"
+    yyyymmdd = f"{date:%Y%m%d}"
+    return (
+        f"gps{yymmdd}g*.hdf5",
+        f"gps{yymmdd}g*.h5",
+        f"gps{yyyymmdd}g*.hdf5",
+        f"gps{yyyymmdd}g*.h5",
+    )
+
+
+def phone_vtec_patterns(date: dt.date) -> tuple[str, ...]:
+    return (
+        f"vtec_{date:%Y_%m_%d}.csv.gz",
+        f"vtec_{date:%Y_%m_%d}.csv",
+        f"vtec_{date:%Y-%m-%d}.csv.gz",
+        f"vtec_{date:%Y-%m-%d}.csv",
+        f"vtec_{date:%Y%m%d}.csv.gz",
+        f"vtec_{date:%Y%m%d}.csv",
+    )
+
+
+def _nonempty_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _search_roots(*search_dirs: Path) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for raw in search_dirs:
+        if raw is None:
+            continue
+        root = Path(raw)
+        candidates = [
+            root,
+            root / "data",
+            root / "phone_tec",
+            root / "data" / "phone_tec",
+        ]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved in seen or not candidate.exists():
+                continue
+            seen.add(resolved)
+            roots.append(candidate)
+    return roots
+
+
+def _glob_patterns(root: Path, patterns: tuple[str, ...]) -> list[Path]:
+    hits: list[Path] = []
+    seen: set[Path] = set()
+    prefixes = ("", "*/", "*/*/")
+    for pattern in patterns:
+        for prefix in prefixes:
+            for path in root.glob(prefix + pattern):
+                try:
+                    key = path.resolve()
+                except OSError:
+                    continue
+                if key in seen or not _nonempty_file(path):
+                    continue
+                seen.add(key)
+                hits.append(path)
+    return hits
+
+
+def _pick_largest(paths: list[Path]) -> Path:
+    return max(paths, key=lambda p: (p.stat().st_size, p.name))
+
+
+def find_madrigal_vtec_file(date: dt.date, *search_dirs: Path) -> Path:
+    """Locate a local CEDAR Madrigal GNSS TEC HDF5 file for *date*."""
+    roots = _search_roots(*search_dirs)
+    hits: list[Path] = []
+    for root in roots:
+        hits.extend(_glob_patterns(root, madrigal_vtec_patterns(date)))
+    if not hits:
+        expected = f"gps{date:%y%m%d}g.hdf5 (or gps{date:%y%m%d}g.003.hdf5)"
+        named = [str(Path(p)) for p in search_dirs if p is not None]
+        searched = ", ".join(str(p) for p in roots) or ", ".join(named) or "(no directories)"
+        raise FileNotFoundError(
+            f"No Madrigal GNSS TEC file for {date.isoformat()} in {searched}. "
+            f"Put {expected} in that folder."
+        )
+    chosen = _pick_largest(hits)
+    print(f"Using local Madrigal file {chosen}")
+    return chosen
+
+
+def find_phone_vtec_file(date: dt.date, *search_dirs: Path) -> Path:
+    """Locate a local Smith et al. phone VTEC CSV (plain or gzipped) for *date*."""
+    roots = _search_roots(*search_dirs)
+    hits: list[Path] = []
+    for root in roots:
+        hits.extend(_glob_patterns(root, phone_vtec_patterns(date)))
+    if not hits:
+        expected = f"vtec_{date:%Y_%m_%d}.csv.gz"
+        named = [str(Path(p)) for p in search_dirs if p is not None]
+        searched = ", ".join(str(p) for p in roots) or ", ".join(named) or "(no directories)"
+        raise FileNotFoundError(
+            f"No phone VTEC file for {date.isoformat()} in {searched}. "
+            f"Put {expected} in that folder."
+        )
+    chosen = _pick_largest(hits)
+    print(f"Using local phone VTEC file {chosen}")
+    return chosen
+
+
+def resolve_local_vtec_files(date: dt.date, input_dir: Path) -> tuple[Path, Path]:
+    """Return (madrigal_hdf5, phone_csv) from a directory that holds both files."""
+    return find_madrigal_vtec_file(date, input_dir), find_phone_vtec_file(date, input_dir)
+
+
 def download_file(url: str, dest: Path, timeout: float = 180.0) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 0:
@@ -101,6 +220,10 @@ def download_file(url: str, dest: Path, timeout: float = 180.0) -> Path:
 
 
 def download_phone_vtec(date: dt.date, data_dir: Path) -> Path:
+    try:
+        return find_phone_vtec_file(date, data_dir)
+    except FileNotFoundError:
+        pass
     if date < PHONE_ARCHIVE_START or date > PHONE_ARCHIVE_END:
         raise FileNotFoundError(
             f"Google phone VTEC maps are published only for "
@@ -129,10 +252,10 @@ def download_madrigal_vtec(
     import madrigalWeb.madrigalWeb as madrigal_web
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    existing = sorted(data_dir.glob(f"gps{date:%y%m%d}g*.hdf5"))
-    if existing and existing[0].stat().st_size > 0:
-        print(f"Using existing {existing[0]}")
-        return existing[0]
+    try:
+        return find_madrigal_vtec_file(date, data_dir)
+    except FileNotFoundError:
+        pass
     local_path = data_dir / f"gps{date:%y%m%d}g.hdf5"
     mad = madrigal_web.MadrigalData(MADRIGAL_URL)
     experiments = mad.getExperiments(
@@ -196,7 +319,9 @@ def s2_tokens_to_latlon(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def load_phone_vtec(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, compression="gzip")
+    name = path.name.lower()
+    compression = "gzip" if name.endswith(".gz") else None
+    df = pd.read_csv(path, compression=compression)
     needed = {"utc_sec", "pierce_s2_token", "vtec", "vtec_stddev"}
     missing = needed - set(df.columns)
     if missing:
@@ -488,12 +613,26 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", default=DEFAULT_DATE.isoformat(), type=_parse_date)
     parser.add_argument("--data-dir", default=Path("data"), type=Path)
+    parser.add_argument(
+        "--input-dir",
+        default=None,
+        type=Path,
+        help=(
+            "Folder that already contains both the Madrigal HDF5 "
+            "(gpsYYMMDDg*.hdf5) and the phone CSV (vtec_YYYY_MM_DD.csv.gz). "
+            "Skips downloads."
+        ),
+    )
+    parser.add_argument("--madrigal-file", default=None, type=Path)
+    parser.add_argument("--phone-file", default=None, type=Path)
     parser.add_argument("--fig-dir", default=Path("figures"), type=Path)
     parser.add_argument("--fps", default=8, type=int)
     parser.add_argument("--user", default=DEFAULT_USER)
     parser.add_argument("--email", default=DEFAULT_EMAIL)
     parser.add_argument("--affiliation", default=DEFAULT_AFFIL)
     args = parser.parse_args(argv)
+    if (args.madrigal_file is None) ^ (args.phone_file is None):
+        parser.error("provide both --madrigal-file and --phone-file, or use --input-dir")
 
     print(f"Phone VTEC archive: {PHONE_ARCHIVE_START} – {PHONE_ARCHIVE_END}  ({PHONE_DOI})")
     if args.date != DEFAULT_DATE and (
@@ -504,10 +643,18 @@ def main(argv: list[str] | None = None) -> int:
             f"the overlapping May 12 in the archive is {DEFAULT_DATE.isoformat()}."
         )
 
-    phone_path = download_phone_vtec(args.date, args.data_dir)
-    mad_path = download_madrigal_vtec(
-        args.date, args.data_dir, args.user, args.email, args.affiliation,
-    )
+    if args.madrigal_file is not None and args.phone_file is not None:
+        mad_path = Path(args.madrigal_file)
+        phone_path = Path(args.phone_file)
+        print(f"Using local Madrigal file {mad_path}")
+        print(f"Using local phone VTEC file {phone_path}")
+    elif args.input_dir is not None:
+        mad_path, phone_path = resolve_local_vtec_files(args.date, args.input_dir)
+    else:
+        phone_path = download_phone_vtec(args.date, args.data_dir)
+        mad_path = download_madrigal_vtec(
+            args.date, args.data_dir, args.user, args.email, args.affiliation,
+        )
     print("Loading Madrigal grid…")
     madrigal = load_madrigal_grid(mad_path)
     print("Loading phone VTEC maps…")

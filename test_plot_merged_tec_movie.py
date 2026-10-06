@@ -4,11 +4,60 @@
 from __future__ import annotations
 
 import datetime as dt
+import tempfile
 from pathlib import Path
 
 import numpy as np
 
 import plot_merged_tec_movie as tec
+
+
+def test_find_local_files_in_one_directory() -> None:
+    date = dt.date(2024, 5, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        gps = root / "gps240512g.003.hdf5"
+        phone = root / "vtec_2024_05_12.csv.gz"
+        gps.write_bytes(b"hdf5-placeholder")
+        phone.write_bytes(b"csv-placeholder")
+        mad_path, phone_path = tec.resolve_local_vtec_files(date, root)
+        assert mad_path.resolve() == gps.resolve()
+        assert phone_path.resolve() == phone.resolve()
+
+
+def test_find_local_files_nested_and_plain_csv() -> None:
+    date = dt.date(2024, 5, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        gps = root / "data" / "gps240512g.hdf5"
+        phone = root / "phone_tec" / "vtec_2024_05_12.csv"
+        gps.parent.mkdir(parents=True)
+        phone.parent.mkdir(parents=True)
+        gps.write_bytes(b"hdf5-placeholder")
+        phone.write_text("utc_sec,pierce_s2_token,vtec,vtec_stddev\n")
+        assert tec.find_madrigal_vtec_file(date, root).resolve() == gps.resolve()
+        assert tec.find_phone_vtec_file(date, root).resolve() == phone.resolve()
+
+
+def test_find_local_files_missing_raises() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = Path(tmp)
+        try:
+            tec.find_madrigal_vtec_file(dt.date(2024, 5, 12), empty)
+        except FileNotFoundError as exc:
+            assert "gps240512g" in str(exc)
+        else:
+            raise AssertionError("expected FileNotFoundError for missing GPS file")
+
+
+def test_download_phone_uses_local_file() -> None:
+    date = dt.date(2024, 5, 12)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        local = root / "vtec_2024_05_12.csv.gz"
+        local.write_bytes(b"csv-placeholder")
+        found = tec.download_phone_vtec(date, root)
+        assert found.resolve() == local.resolve()
 
 
 def test_phone_url() -> None:
@@ -91,6 +140,10 @@ def test_load_madrigal_if_present() -> None:
 
 
 if __name__ == "__main__":
+    test_find_local_files_in_one_directory()
+    test_find_local_files_nested_and_plain_csv()
+    test_find_local_files_missing_raises()
+    test_download_phone_uses_local_file()
     test_phone_url()
     test_phone_date_outside_archive_raises()
     test_merge_fills_phone_only_gaps()
