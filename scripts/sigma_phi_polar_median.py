@@ -184,7 +184,9 @@ def plot_polar(
     r_edges = MLAT_POLE - mlat_edges
     r_max = MLAT_POLE - MLAT_RIM
 
-    Z = median[::-1, :]
+    # CSV stores σφ in radians; display color scale in degrees
+    median_deg = np.rad2deg(median)
+    Z = median_deg[::-1, :]
     r_edges_plot = r_edges[::-1]
 
     fig = plt.figure(figsize=(8.5, 8.5))
@@ -193,7 +195,7 @@ def plot_polar(
     ax.set_theta_direction(1)
 
     THETA, R = np.meshgrid(theta_edges, r_edges_plot)
-    finite = median[np.isfinite(median)]
+    finite = median_deg[np.isfinite(median_deg)]
     vmax = float(np.percentile(finite, 95)) if finite.size else 1.0
     pcm = ax.pcolormesh(
         THETA,
@@ -205,7 +207,7 @@ def plot_polar(
         vmax=vmax,
     )
     cbar = fig.colorbar(pcm, ax=ax, pad=0.1, shrink=0.75)
-    cbar.set_label(r"median $\sigma_\phi$ (rad)")
+    cbar.set_label(r"median $\sigma_\phi$ (degrees)")
 
     ax.set_ylim(0, r_max)
     mlat_ticks = np.arange(MLAT_RIM, MLAT_POLE + 1e-9, 10.0)
@@ -260,7 +262,11 @@ def run_mode(mode: str) -> None:
     mlt_c, mlat_c, med, cnt = median_grid(df)
     filled = np.isfinite(med).sum()
     print(f"Filled bins: {filled} / {med.size}")
-    print(f"Median σφ range: {np.nanmin(med):.4f} … {np.nanmax(med):.4f}")
+    med_deg = np.rad2deg(med)
+    print(
+        f"Median σφ range: {np.nanmin(med):.4f}–{np.nanmax(med):.4f} rad "
+        f"({np.nanmin(med_deg):.2f}–{np.nanmax(med_deg):.2f} deg)"
+    )
     print(f"Total counts (finite only): {int(cnt.sum()):,}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -282,6 +288,7 @@ def run_mode(mode: str) -> None:
         mlt_centers=mlt_c,
         mlat_centers=mlat_c,
         median_sigma_phi=med,
+        median_sigma_phi_deg=med_deg,
         counts=cnt,
         keep_days=np.array(keep),
         other_days=np.array(other),
@@ -307,7 +314,8 @@ def run_mode(mode: str) -> None:
                     {
                         "mlat_center": mlat,
                         "mlt_center": mlt,
-                        "median_sigma_phi": med[i, j],
+                        "median_sigma_phi_rad": med[i, j],
+                        "median_sigma_phi_deg": med_deg[i, j],
                         "n": int(cnt[i, j]),
                     }
                 )
