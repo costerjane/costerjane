@@ -195,8 +195,6 @@ def plot_polar(
     ax.set_theta_direction(1)
 
     THETA, R = np.meshgrid(theta_edges, r_edges_plot)
-    finite = median_deg[np.isfinite(median_deg)]
-    vmax = float(np.percentile(finite, 95)) if finite.size else 1.0
     pcm = ax.pcolormesh(
         THETA,
         R,
@@ -204,7 +202,7 @@ def plot_polar(
         cmap="viridis",
         shading="flat",
         vmin=0.0,
-        vmax=vmax,
+        vmax=1.0,
     )
     cbar = fig.colorbar(pcm, ax=ax, pad=0.1, shrink=0.75)
     cbar.set_label(r"median $\sigma_\phi$ (degrees)")
