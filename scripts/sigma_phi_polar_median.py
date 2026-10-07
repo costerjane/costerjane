@@ -4,7 +4,8 @@ Quiet-time median σφ vs MLT/MLAT for October 2024.
 
 - Drop whole UT days where any 3-hour Kp > 4 (GFZ Potsdam definitive Kp).
 - Bin remaining samples in MLT × MLAT and take the median σφ per bin.
-- Plot a northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 0 (rim).
+  NaN values are dropped and never counted toward the median.
+- Plot a northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 50 (rim).
 """
 
 from __future__ import annotations
@@ -22,8 +23,20 @@ OUT_DIR = Path(__file__).resolve().parents[1] / "figures"
 ARTIFACT_DIR = Path("/opt/cursor/artifacts")
 
 MLT_BIN_H = 1.0  # hours
-MLAT_BIN_DEG = 1.0  # degrees
+MLAT_BIN_DEG = 3.0  # degrees
+MLAT_POLE = 90.0
+MLAT_RIM = 50.0
 KP_THRESHOLD = 4.0  # exclude day if any 3-h Kp > this
+
+
+def mlat_bin_edges() -> np.ndarray:
+    """Edges from rim→pole in MLAT_BIN_DEG steps, closing exactly at the pole."""
+    edges = np.arange(MLAT_RIM, MLAT_POLE + MLAT_BIN_DEG, MLAT_BIN_DEG)
+    if edges[-1] > MLAT_POLE:
+        edges[-1] = MLAT_POLE
+    elif edges[-1] < MLAT_POLE:
+        edges = np.append(edges, MLAT_POLE)
+    return edges
 
 
 def fetch_quiet_october_days(year: int = 2024, month: int = 10) -> tuple[list[str], list[str]]:
@@ -66,37 +79,49 @@ def load_quiet_samples(keep_days: list[str]) -> pd.DataFrame:
             print(f"warning: missing CSV for quiet day {day}")
             continue
         df = pd.read_csv(path, usecols=usecols)
-        df = df.dropna(subset=usecols)
-        # Northern hemisphere map: MLAT 0 → 90
-        df = df[(df["mlat"] >= 0.0) & (df["mlat"] <= 90.0)]
+        # Drop NaN / non-finite in all used columns — never counted in medians
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=usecols)
+        df = df[
+            np.isfinite(df["sigma_phi"])
+            & np.isfinite(df["mlat"])
+            & np.isfinite(df["mlt"])
+        ]
+        # Map domain: MLAT 50 → 90
+        df = df[(df["mlat"] >= MLAT_RIM) & (df["mlat"] <= MLAT_POLE)]
         df = df[(df["mlt"] >= 0.0) & (df["mlt"] < 24.0)]
-        df = df[np.isfinite(df["sigma_phi"])]
         df["day"] = day
         frames.append(df)
-        print(f"loaded {day}: {len(df):,} northern samples")
+        print(f"loaded {day}: {len(df):,} samples (MLAT {MLAT_RIM:g}–{MLAT_POLE:g})")
     if not frames:
         raise SystemExit("No quiet-day samples found.")
     return pd.concat(frames, ignore_index=True)
 
 
 def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    # Ensure no NaNs reach the aggregator
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["sigma_phi", "mlat", "mlt"]
+    )
+    df = df[
+        np.isfinite(df["sigma_phi"])
+        & np.isfinite(df["mlat"])
+        & np.isfinite(df["mlt"])
+    ]
+
     mlt_edges = np.arange(0.0, 24.0 + MLT_BIN_H, MLT_BIN_H)
-    mlat_edges = np.arange(0.0, 90.0 + MLAT_BIN_DEG, MLAT_BIN_DEG)
+    mlat_edges = mlat_bin_edges()
 
     mlt_idx = np.clip(
         np.floor(df["mlt"].to_numpy() / MLT_BIN_H).astype(int),
         0,
         len(mlt_edges) - 2,
     )
-    mlat_idx = np.clip(
-        np.floor(df["mlat"].to_numpy() / MLAT_BIN_DEG).astype(int),
-        0,
-        len(mlat_edges) - 2,
-    )
+    # digitize: bins are [edge_i, edge_{i+1}); last edge inclusive via clip
+    mlat_idx = np.digitize(df["mlat"].to_numpy(), mlat_edges) - 1
+    mlat_idx = np.clip(mlat_idx, 0, len(mlat_edges) - 2)
 
     n_mlt = len(mlt_edges) - 1
     n_mlat = len(mlat_edges) - 1
-    # Collect values per bin via pandas groupby for robust medians
     tmp = pd.DataFrame(
         {
             "mlt_i": mlt_idx,
@@ -104,15 +129,16 @@ def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
             "sigma_phi": df["sigma_phi"].to_numpy(),
         }
     )
+    # pandas median/count skip NaN by default; values already finite
     med = (
         tmp.groupby(["mlat_i", "mlt_i"], sort=True)["sigma_phi"]
-        .median()
+        .median(skipna=True)
         .unstack(fill_value=np.nan)
         .reindex(index=range(n_mlat), columns=range(n_mlt))
     )
     counts = (
         tmp.groupby(["mlat_i", "mlt_i"], sort=True)["sigma_phi"]
-        .count()
+        .count()  # excludes NaN
         .unstack(fill_value=0)
         .reindex(index=range(n_mlat), columns=range(n_mlt))
     )
@@ -125,33 +151,30 @@ def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
 
 
 def plot_polar(
-    mlt_centers: np.ndarray,
-    mlat_centers: np.ndarray,
     median: np.ndarray,
     keep_days: list[str],
     drop_days: list[str],
     out_path: Path,
 ) -> None:
-    # Mesh in polar coords: theta from MLT, radius = 90 - MLAT
     mlt_edges = np.arange(0.0, 24.0 + MLT_BIN_H, MLT_BIN_H)
-    mlat_edges = np.arange(0.0, 90.0 + MLAT_BIN_DEG, MLAT_BIN_DEG)
-    # pcolormesh wants edges; extend median to (n_mlat, n_mlt)
+    mlat_edges = mlat_bin_edges()
     theta_edges = np.deg2rad(mlt_edges * 15.0)
-    r_edges = 90.0 - mlat_edges  # 90→0 MLAT becomes 0→90 radius
+    # radius = degrees from pole: MLAT 90 → r=0, MLAT 50 → r=40
+    r_edges = MLAT_POLE - mlat_edges
+    r_max = MLAT_POLE - MLAT_RIM
 
-    # For pcolormesh with polar: columns = theta, rows = r
-    # Our median is shape (n_mlat, n_mlt) with mlat increasing 0→90 (r decreasing).
-    # Flip so row 0 is pole (r near 0).
+    # median rows increase with MLAT (rim→pole); flip so row 0 is pole
     Z = median[::-1, :]
     r_edges_plot = r_edges[::-1]
 
     fig = plt.figure(figsize=(8.5, 8.5))
     ax = fig.add_subplot(111, projection="polar")
-    # 12 MLT at top, 00 at bottom; 06 at right (dawn), 18 at left (dusk)
     ax.set_theta_zero_location("S")  # MLT 0 at bottom
-    ax.set_theta_direction(1)  # counterclockwise → 06 at right
+    ax.set_theta_direction(1)  # CCW → 06 at right
 
     THETA, R = np.meshgrid(theta_edges, r_edges_plot)
+    finite = median[np.isfinite(median)]
+    vmax = float(np.percentile(finite, 95)) if finite.size else 1.0
     pcm = ax.pcolormesh(
         THETA,
         R,
@@ -159,25 +182,27 @@ def plot_polar(
         cmap="viridis",
         shading="flat",
         vmin=0.0,
-        vmax=np.nanpercentile(median, 95) if np.isfinite(median).any() else 1.0,
+        vmax=vmax,
     )
     cbar = fig.colorbar(pcm, ax=ax, pad=0.1, shrink=0.75)
     cbar.set_label(r"median $\sigma_\phi$ (rad)")
 
-    ax.set_ylim(0, 90)
-    ax.set_yticks([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])
-    ax.set_yticklabels(["90", "80", "70", "60", "50", "40", "30", "20", "10", "0"])
+    ax.set_ylim(0, r_max)
+    mlat_ticks = np.arange(MLAT_RIM, MLAT_POLE + 1e-9, 10.0)
+    r_ticks = MLAT_POLE - mlat_ticks
+    ax.set_yticks(r_ticks)
+    ax.set_yticklabels([f"{int(m)}" for m in mlat_ticks])
     ax.set_xticks(np.deg2rad(np.arange(0, 24, 3) * 15.0))
     ax.set_xticklabels([f"{h:02d}" for h in range(0, 24, 3)])
     ax.set_title(
         "October 2024 quiet-time median "
         r"$\sigma_\phi$"
         f"\n(Kp ≤ {KP_THRESHOLD:g} all day; "
-        f"{MLT_BIN_H:g} h × {MLAT_BIN_DEG:g}° bins; N={len(keep_days)} days)",
+        f"{MLT_BIN_H:g} h × {MLAT_BIN_DEG:g}° bins; "
+        f"MLAT {MLAT_POLE:g}→{MLAT_RIM:g}; N={len(keep_days)} days)",
         pad=20,
     )
-    # Annotate noon
-    ax.text(np.pi, 95, "12 MLT", ha="center", va="bottom", fontsize=11)
+    ax.text(np.pi, r_max + 2.5, "12 MLT", ha="center", va="bottom", fontsize=11)
 
     note = (
         f"Kept: {', '.join(d[-2:] for d in keep_days)}\n"
@@ -196,14 +221,16 @@ def main() -> None:
     keep, drop = fetch_quiet_october_days()
     print(f"Quiet days kept ({len(keep)}): {keep}")
     print(f"Disturbed days dropped ({len(drop)}): {drop}")
+    print(f"MLAT edges: {mlat_bin_edges()}")
 
     df = load_quiet_samples(keep)
-    print(f"Total samples: {len(df):,}")
+    print(f"Total finite samples: {len(df):,}")
 
     mlt_c, mlat_c, med, cnt = median_grid(df)
     filled = np.isfinite(med).sum()
     print(f"Filled bins: {filled} / {med.size}")
     print(f"Median σφ range: {np.nanmin(med):.4f} … {np.nanmax(med):.4f}")
+    print(f"Total counts (finite only): {int(cnt.sum()):,}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     grid_path = OUT_DIR / "sigma_phi_median_grid_oct2024.npz"
@@ -215,17 +242,19 @@ def main() -> None:
         counts=cnt,
         keep_days=np.array(keep),
         drop_days=np.array(drop),
+        mlt_bin_h=MLT_BIN_H,
+        mlat_bin_deg=MLAT_BIN_DEG,
+        mlat_rim=MLAT_RIM,
+        mlat_pole=MLAT_POLE,
     )
     print(f"wrote {grid_path}")
 
     plot_path = OUT_DIR / "sigma_phi_median_polar_oct2024.png"
-    plot_polar(mlt_c, mlat_c, med, keep, drop, plot_path)
+    plot_polar(med, keep, drop, plot_path)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    artifact = ARTIFACT_DIR / "sigma_phi_median_polar_oct2024.png"
-    plot_polar(mlt_c, mlat_c, med, keep, drop, artifact)
+    plot_polar(med, keep, drop, ARTIFACT_DIR / "sigma_phi_median_polar_oct2024.png")
 
-    # Also save a flat CSV summary of the grid for inspection
     rows = []
     for i, mlat in enumerate(mlat_c):
         for j, mlt in enumerate(mlt_c):
