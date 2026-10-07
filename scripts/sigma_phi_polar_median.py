@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Quiet-time median σφ vs MLT/MLAT for October 2024.
+Median σφ vs MLT/MLAT polar maps for October 2024.
 
-- Drop whole UT days where any 3-hour Kp > 4 (GFZ Potsdam definitive Kp).
-- Bin remaining samples in MLT × MLAT and take the median σφ per bin.
-  NaN values are dropped and never counted toward the median.
-- Plot a northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 50 (rim).
+Modes
+-----
+quiet:      keep days where every 3-hour Kp ≤ 4  (drop if any Kp > 4)
+disturbed:  keep days where any 3-hour Kp ≥ 4
+
+Both modes:
+- Bin finite samples in 1 h MLT × 3° MLAT; median σφ per bin (NaNs excluded)
+- Northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 50 (rim)
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import urllib.request
 from pathlib import Path
@@ -26,7 +31,7 @@ MLT_BIN_H = 1.0  # hours
 MLAT_BIN_DEG = 3.0  # degrees
 MLAT_POLE = 90.0
 MLAT_RIM = 50.0
-KP_THRESHOLD = 4.0  # exclude day if any 3-h Kp > this
+KP_THRESHOLD = 4.0
 
 
 def mlat_bin_edges() -> np.ndarray:
@@ -39,8 +44,7 @@ def mlat_bin_edges() -> np.ndarray:
     return edges
 
 
-def fetch_quiet_october_days(year: int = 2024, month: int = 10) -> tuple[list[str], list[str]]:
-    """Return (keep_dates, drop_dates) as YYYY-MM-DD strings from GFZ Kp."""
+def fetch_kp_by_day(year: int = 2024, month: int = 10) -> dict[str, list[float]]:
     start = f"{year}-{month:02d}-01T00:00:00Z"
     end = f"{year}-{month:02d}-31T21:00:00Z"
     url = (
@@ -54,14 +58,35 @@ def fetch_quiet_october_days(year: int = 2024, month: int = 10) -> tuple[list[st
     for t, kp in zip(payload["datetime"], payload["Kp"]):
         day = t[:10]
         by_day.setdefault(day, []).append(float(kp))
+    return by_day
 
-    keep, drop = [], []
-    for day in sorted(by_day):
-        if max(by_day[day]) > KP_THRESHOLD:
-            drop.append(day)
-        else:
-            keep.append(day)
-    return keep, drop
+
+def select_days(mode: str) -> tuple[list[str], list[str], str]:
+    """
+    Return (keep_dates, other_dates, selection_label).
+
+    quiet:     keep if max(Kp) ≤ 4  (i.e. no 3-h Kp > 4)
+    disturbed: keep if max(Kp) ≥ 4  (i.e. any 3-h Kp ≥ 4)
+    """
+    by_day = fetch_kp_by_day()
+    keep, other = [], []
+    if mode == "quiet":
+        label = f"Kp ≤ {KP_THRESHOLD:g} all day"
+        for day in sorted(by_day):
+            if max(by_day[day]) > KP_THRESHOLD:
+                other.append(day)
+            else:
+                keep.append(day)
+    elif mode == "disturbed":
+        label = f"any Kp ≥ {KP_THRESHOLD:g}"
+        for day in sorted(by_day):
+            if max(by_day[day]) >= KP_THRESHOLD:
+                keep.append(day)
+            else:
+                other.append(day)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+    return keep, other, label
 
 
 def csv_path_for_day(day: str) -> Path | None:
@@ -70,35 +95,32 @@ def csv_path_for_day(day: str) -> Path | None:
     return path if path.exists() else None
 
 
-def load_quiet_samples(keep_days: list[str]) -> pd.DataFrame:
+def load_samples(keep_days: list[str]) -> pd.DataFrame:
     frames = []
     usecols = ["sigma_phi", "mlat", "mlt"]
     for day in keep_days:
         path = csv_path_for_day(day)
         if path is None:
-            print(f"warning: missing CSV for quiet day {day}")
+            print(f"warning: missing CSV for day {day}")
             continue
         df = pd.read_csv(path, usecols=usecols)
-        # Drop NaN / non-finite in all used columns — never counted in medians
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=usecols)
         df = df[
             np.isfinite(df["sigma_phi"])
             & np.isfinite(df["mlat"])
             & np.isfinite(df["mlt"])
         ]
-        # Map domain: MLAT 50 → 90
         df = df[(df["mlat"] >= MLAT_RIM) & (df["mlat"] <= MLAT_POLE)]
         df = df[(df["mlt"] >= 0.0) & (df["mlt"] < 24.0)]
         df["day"] = day
         frames.append(df)
         print(f"loaded {day}: {len(df):,} samples (MLAT {MLAT_RIM:g}–{MLAT_POLE:g})")
     if not frames:
-        raise SystemExit("No quiet-day samples found.")
+        raise SystemExit("No samples found for selected days.")
     return pd.concat(frames, ignore_index=True)
 
 
 def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    # Ensure no NaNs reach the aggregator
     df = df.replace([np.inf, -np.inf], np.nan).dropna(
         subset=["sigma_phi", "mlat", "mlt"]
     )
@@ -116,7 +138,6 @@ def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
         0,
         len(mlt_edges) - 2,
     )
-    # digitize: bins are [edge_i, edge_{i+1}); last edge inclusive via clip
     mlat_idx = np.digitize(df["mlat"].to_numpy(), mlat_edges) - 1
     mlat_idx = np.clip(mlat_idx, 0, len(mlat_edges) - 2)
 
@@ -129,16 +150,15 @@ def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
             "sigma_phi": df["sigma_phi"].to_numpy(),
         }
     )
-    # pandas median/count skip NaN by default; values already finite
     med = (
         tmp.groupby(["mlat_i", "mlt_i"], sort=True)["sigma_phi"]
-        .median(skipna=True)
+        .median()
         .unstack(fill_value=np.nan)
         .reindex(index=range(n_mlat), columns=range(n_mlt))
     )
     counts = (
         tmp.groupby(["mlat_i", "mlt_i"], sort=True)["sigma_phi"]
-        .count()  # excludes NaN
+        .count()
         .unstack(fill_value=0)
         .reindex(index=range(n_mlat), columns=range(n_mlt))
     )
@@ -153,24 +173,24 @@ def median_grid(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, n
 def plot_polar(
     median: np.ndarray,
     keep_days: list[str],
-    drop_days: list[str],
+    other_days: list[str],
+    mode: str,
+    selection_label: str,
     out_path: Path,
 ) -> None:
     mlt_edges = np.arange(0.0, 24.0 + MLT_BIN_H, MLT_BIN_H)
     mlat_edges = mlat_bin_edges()
     theta_edges = np.deg2rad(mlt_edges * 15.0)
-    # radius = degrees from pole: MLAT 90 → r=0, MLAT 50 → r=40
     r_edges = MLAT_POLE - mlat_edges
     r_max = MLAT_POLE - MLAT_RIM
 
-    # median rows increase with MLAT (rim→pole); flip so row 0 is pole
     Z = median[::-1, :]
     r_edges_plot = r_edges[::-1]
 
     fig = plt.figure(figsize=(8.5, 8.5))
     ax = fig.add_subplot(111, projection="polar")
-    ax.set_theta_zero_location("S")  # MLT 0 at bottom
-    ax.set_theta_direction(1)  # CCW → 06 at right
+    ax.set_theta_zero_location("S")
+    ax.set_theta_direction(1)
 
     THETA, R = np.meshgrid(theta_edges, r_edges_plot)
     finite = median[np.isfinite(median)]
@@ -194,20 +214,30 @@ def plot_polar(
     ax.set_yticklabels([f"{int(m)}" for m in mlat_ticks])
     ax.set_xticks(np.deg2rad(np.arange(0, 24, 3) * 15.0))
     ax.set_xticklabels([f"{h:02d}" for h in range(0, 24, 3)])
+
+    condition_name = "quiet-time" if mode == "quiet" else "disturbed"
     ax.set_title(
-        "October 2024 quiet-time median "
+        f"October 2024 {condition_name} median "
         r"$\sigma_\phi$"
-        f"\n(Kp ≤ {KP_THRESHOLD:g} all day; "
+        f"\n({selection_label}; "
         f"{MLT_BIN_H:g} h × {MLAT_BIN_DEG:g}° bins; "
         f"MLAT {MLAT_POLE:g}→{MLAT_RIM:g}; N={len(keep_days)} days)",
         pad=20,
     )
     ax.text(np.pi, r_max + 2.5, "12 MLT", ha="center", va="bottom", fontsize=11)
 
-    note = (
-        f"Kept: {', '.join(d[-2:] for d in keep_days)}\n"
-        f"Dropped (Kp>{KP_THRESHOLD:g}): {', '.join(d[-2:] for d in drop_days) or 'none'}"
-    )
+    if mode == "quiet":
+        note = (
+            f"Kept: {', '.join(d[-2:] for d in keep_days)}\n"
+            f"Dropped (Kp>{KP_THRESHOLD:g}): "
+            f"{', '.join(d[-2:] for d in other_days) or 'none'}"
+        )
+    else:
+        note = (
+            f"Kept (Kp≥{KP_THRESHOLD:g}): {', '.join(d[-2:] for d in keep_days)}\n"
+            f"Not used (all Kp<{KP_THRESHOLD:g}): "
+            f"{', '.join(d[-2:] for d in other_days) or 'none'}"
+        )
     fig.text(0.5, 0.02, note, ha="center", va="bottom", fontsize=8, wrap=True)
     fig.tight_layout(rect=[0, 0.06, 1, 1])
 
@@ -217,13 +247,14 @@ def plot_polar(
     plt.close(fig)
 
 
-def main() -> None:
-    keep, drop = fetch_quiet_october_days()
-    print(f"Quiet days kept ({len(keep)}): {keep}")
-    print(f"Disturbed days dropped ({len(drop)}): {drop}")
+def run_mode(mode: str) -> None:
+    keep, other, selection_label = select_days(mode)
+    print(f"\n=== mode={mode} ===")
+    print(f"Selected days ({len(keep)}): {keep}")
+    print(f"Other days ({len(other)}): {other}")
     print(f"MLAT edges: {mlat_bin_edges()}")
 
-    df = load_quiet_samples(keep)
+    df = load_samples(keep)
     print(f"Total finite samples: {len(df):,}")
 
     mlt_c, mlat_c, med, cnt = median_grid(df)
@@ -233,27 +264,40 @@ def main() -> None:
     print(f"Total counts (finite only): {int(cnt.sum()):,}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    grid_path = OUT_DIR / "sigma_phi_median_grid_oct2024.npz"
+    stem = f"sigma_phi_median_{mode}_oct2024"
+    # Keep prior quiet filenames for backward compatibility
+    if mode == "quiet":
+        grid_npz = OUT_DIR / "sigma_phi_median_grid_oct2024.npz"
+        csv_npz = OUT_DIR / "sigma_phi_median_grid_oct2024.csv"
+        plot_npz = OUT_DIR / "sigma_phi_median_polar_oct2024.png"
+        artifact_name = "sigma_phi_median_polar_oct2024.png"
+    else:
+        grid_npz = OUT_DIR / f"{stem}_grid.npz"
+        csv_npz = OUT_DIR / f"{stem}_grid.csv"
+        plot_npz = OUT_DIR / f"{stem}_polar.png"
+        artifact_name = f"{stem}_polar.png"
+
     np.savez_compressed(
-        grid_path,
+        grid_npz,
         mlt_centers=mlt_c,
         mlat_centers=mlat_c,
         median_sigma_phi=med,
         counts=cnt,
         keep_days=np.array(keep),
-        drop_days=np.array(drop),
+        other_days=np.array(other),
+        mode=mode,
         mlt_bin_h=MLT_BIN_H,
         mlat_bin_deg=MLAT_BIN_DEG,
         mlat_rim=MLAT_RIM,
         mlat_pole=MLAT_POLE,
     )
-    print(f"wrote {grid_path}")
+    print(f"wrote {grid_npz}")
 
-    plot_path = OUT_DIR / "sigma_phi_median_polar_oct2024.png"
-    plot_polar(med, keep, drop, plot_path)
-
+    plot_polar(med, keep, other, mode, selection_label, plot_npz)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    plot_polar(med, keep, drop, ARTIFACT_DIR / "sigma_phi_median_polar_oct2024.png")
+    plot_polar(
+        med, keep, other, mode, selection_label, ARTIFACT_DIR / artifact_name
+    )
 
     rows = []
     for i, mlat in enumerate(mlat_c):
@@ -267,7 +311,21 @@ def main() -> None:
                         "n": int(cnt[i, j]),
                     }
                 )
-    pd.DataFrame(rows).to_csv(OUT_DIR / "sigma_phi_median_grid_oct2024.csv", index=False)
+    pd.DataFrame(rows).to_csv(csv_npz, index=False)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode",
+        choices=("quiet", "disturbed", "both"),
+        default="both",
+        help="Kp day selection (default: both)",
+    )
+    args = parser.parse_args()
+    modes = ("quiet", "disturbed") if args.mode == "both" else (args.mode,)
+    for mode in modes:
+        run_mode(mode)
 
 
 if __name__ == "__main__":
