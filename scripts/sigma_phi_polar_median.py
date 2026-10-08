@@ -9,7 +9,7 @@ disturbed:  keep days where any 3-hour Kp ≥ 4
 
 Both modes:
 - Bin finite samples in 30 min MLT × 1° MLAT; median σφ per bin (NaNs excluded)
-- Color scale in radians, fixed 0–1
+- Color scale in radians, fixed 0–0.1
 - Northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 50 (rim)
 """
 
@@ -34,7 +34,7 @@ MLAT_POLE = 90.0
 MLAT_RIM = 50.0
 KP_THRESHOLD = 4.0
 CBAR_VMIN = 0.0
-CBAR_VMAX = 1.0  # radians
+CBAR_VMAX = 0.1  # radians — tight scale to show structure (~0.02–0.09 typical)
 
 
 
