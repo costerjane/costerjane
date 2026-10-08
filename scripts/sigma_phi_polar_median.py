@@ -8,7 +8,8 @@ quiet:      keep days where every 3-hour Kp ≤ 4  (drop if any Kp > 4)
 disturbed:  keep days where any 3-hour Kp ≥ 4
 
 Both modes:
-- Bin finite samples in 1 h MLT × 3° MLAT; median σφ per bin (NaNs excluded)
+- Bin finite samples in 30 min MLT × 1° MLAT; median σφ per bin (NaNs excluded)
+- Color scale in radians, fixed 0–1
 - Northern-hemisphere polar map: 12 MLT at top, MLAT 90 (center) → 50 (rim)
 """
 
@@ -27,11 +28,14 @@ CSV_DIR = Path(__file__).resolve().parents[1] / "data" / "csv"
 OUT_DIR = Path(__file__).resolve().parents[1] / "figures"
 ARTIFACT_DIR = Path("/opt/cursor/artifacts")
 
-MLT_BIN_H = 1.0  # hours
-MLAT_BIN_DEG = 3.0  # degrees
+MLT_BIN_H = 0.5  # hours (30 min)
+MLAT_BIN_DEG = 1.0  # degrees
 MLAT_POLE = 90.0
 MLAT_RIM = 50.0
 KP_THRESHOLD = 4.0
+CBAR_VMIN = 0.0
+CBAR_VMAX = 1.0  # radians
+
 
 
 def mlat_bin_edges() -> np.ndarray:
@@ -184,9 +188,7 @@ def plot_polar(
     r_edges = MLAT_POLE - mlat_edges
     r_max = MLAT_POLE - MLAT_RIM
 
-    # CSV stores σφ in radians; display color scale in degrees
-    median_deg = np.rad2deg(median)
-    Z = median_deg[::-1, :]
+    Z = median[::-1, :]
     r_edges_plot = r_edges[::-1]
 
     fig = plt.figure(figsize=(8.5, 8.5))
@@ -201,11 +203,11 @@ def plot_polar(
         Z,
         cmap="viridis",
         shading="flat",
-        vmin=0.0,
-        vmax=1.0,
+        vmin=CBAR_VMIN,
+        vmax=CBAR_VMAX,
     )
     cbar = fig.colorbar(pcm, ax=ax, pad=0.1, shrink=0.75)
-    cbar.set_label(r"median $\sigma_\phi$ (degrees)")
+    cbar.set_label(r"median $\sigma_\phi$ (rad)")
 
     ax.set_ylim(0, r_max)
     mlat_ticks = np.arange(MLAT_RIM, MLAT_POLE + 1e-9, 10.0)
@@ -216,11 +218,14 @@ def plot_polar(
     ax.set_xticklabels([f"{h:02d}" for h in range(0, 24, 3)])
 
     condition_name = "quiet-time" if mode == "quiet" else "disturbed"
+    mlt_bin_label = (
+        "30 min" if abs(MLT_BIN_H - 0.5) < 1e-9 else f"{MLT_BIN_H:g} h"
+    )
     ax.set_title(
         f"October 2024 {condition_name} median "
         r"$\sigma_\phi$"
         f"\n({selection_label}; "
-        f"{MLT_BIN_H:g} h × {MLAT_BIN_DEG:g}° bins; "
+        f"{mlt_bin_label} × {MLAT_BIN_DEG:g}° bins; "
         f"MLAT {MLAT_POLE:g}→{MLAT_RIM:g}; N={len(keep_days)} days)",
         pad=20,
     )
@@ -260,11 +265,7 @@ def run_mode(mode: str) -> None:
     mlt_c, mlat_c, med, cnt = median_grid(df)
     filled = np.isfinite(med).sum()
     print(f"Filled bins: {filled} / {med.size}")
-    med_deg = np.rad2deg(med)
-    print(
-        f"Median σφ range: {np.nanmin(med):.4f}–{np.nanmax(med):.4f} rad "
-        f"({np.nanmin(med_deg):.2f}–{np.nanmax(med_deg):.2f} deg)"
-    )
+    print(f"Median σφ range: {np.nanmin(med):.4f}–{np.nanmax(med):.4f} rad")
     print(f"Total counts (finite only): {int(cnt.sum()):,}")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -286,7 +287,6 @@ def run_mode(mode: str) -> None:
         mlt_centers=mlt_c,
         mlat_centers=mlat_c,
         median_sigma_phi=med,
-        median_sigma_phi_deg=med_deg,
         counts=cnt,
         keep_days=np.array(keep),
         other_days=np.array(other),
@@ -295,6 +295,8 @@ def run_mode(mode: str) -> None:
         mlat_bin_deg=MLAT_BIN_DEG,
         mlat_rim=MLAT_RIM,
         mlat_pole=MLAT_POLE,
+        cbar_vmin=CBAR_VMIN,
+        cbar_vmax=CBAR_VMAX,
     )
     print(f"wrote {grid_npz}")
 
@@ -313,7 +315,6 @@ def run_mode(mode: str) -> None:
                         "mlat_center": mlat,
                         "mlt_center": mlt,
                         "median_sigma_phi_rad": med[i, j],
-                        "median_sigma_phi_deg": med_deg[i, j],
                         "n": int(cnt[i, j]),
                     }
                 )
