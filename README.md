@@ -37,3 +37,13 @@ Outputs in `data/quiet_monthly_median/2017_eia_coeffs_qdlon/`:
 
 - `eia_coeffs_qdlon_mlt14_YYYYMM.npz` with `qdlon_centers`, `coefficients` `(n_lon, 9)`,
   `rmse`, resolved flags, and reported crest positions/widths.
+
+## Fourier smoothing in QD longitude
+
+```bash
+python scripts/fit_eia_fourier_qdlon.py --order 3
+```
+
+Fits \(c(\phi)=a_0+\sum_{k=1}^{K}[a_k\cos(k\phi)+b_k\sin(k\phi)]\) to each
+coefficient, reconstructs VTEC, and compares to the original maps. Outputs in
+`data/quiet_monthly_median/2017_eia_fourier_qdlon/`.
