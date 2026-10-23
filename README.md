@@ -23,3 +23,17 @@ Outputs in `data/quiet_monthly_median/2017_qd_mlt/`:
 | `vtec_qdlat_qdlon_mlt14_YYYYMM.npz` | QD lat (1°) × QD lon (5°), MLT≈14±0.5 h | **Longitude structure** |
 
 Conversion uses `apexpy` at 350 km. MLT from `UT = LT - glon/15`, then `mlon2mlt`.
+
+## EIA coefficients vs QD longitude (MLT ≈ 14)
+
+Fit the 9-parameter EIA profile at each QD-longitude bin of the
+`vtec_qdlat_qdlon_mlt14_*.npz` maps:
+
+```bash
+python scripts/fit_eia_coeffs_qdlon.py
+```
+
+Outputs in `data/quiet_monthly_median/2017_eia_coeffs_qdlon/`:
+
+- `eia_coeffs_qdlon_mlt14_YYYYMM.npz` with `qdlon_centers`, `coefficients` `(n_lon, 9)`,
+  `rmse`, resolved flags, and reported crest positions/widths.
