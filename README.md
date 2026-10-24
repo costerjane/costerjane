@@ -47,3 +47,13 @@ python scripts/fit_eia_fourier_qdlon.py --order 3
 Fits \(c(\phi)=a_0+\sum_{k=1}^{K}[a_k\cos(k\phi)+b_k\sin(k\phi)]\) to each
 coefficient, reconstructs VTEC, and compares to the original maps. Outputs in
 `data/quiet_monthly_median/2017_eia_fourier_qdlon/`.
+
+## Remap EIA model to geographic lat/lon / UT
+
+```bash
+python scripts/eia_model_to_geographic.py --mode both --ut 2017-10-16T18:00:00
+```
+
+Two modes:
+- `mlt14_map` — full geographic map of the MLT≈14 morphology
+- `ut_snapshot` — at one UT, fill only where MLT≈14 (moving strip)
