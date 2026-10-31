@@ -24,9 +24,9 @@ LON_MIN, LON_MAX = -160.0, -40.0
 LAT_MIN, LAT_MAX = 0.0, 70.0
 ROTI_MIN, ROTI_MAX = 0.2, 1.0
 SIZE_MIN, SIZE_MAX = 8.0, 90.0  # matplotlib scatter point areas
-# Magenta stands out on rainbow TEC and white no-data gaps
-FACE_COLOR = "#E6007A"
-EDGE_COLOR = "#1A1A1A"
+# Solid black — high contrast on rainbow TEC and white no-data gaps
+FACE_COLOR = "#000000"
+EDGE_COLOR = "#000000"
 
 
 def load_roti(
@@ -115,9 +115,9 @@ def main() -> None:
         y,
         s=sizes,
         c=FACE_COLOR,
-        alpha=0.8,
+        alpha=0.75,
         edgecolors=EDGE_COLOR,
-        linewidths=0.35,
+        linewidths=0.25,
         zorder=5,
     )
 
