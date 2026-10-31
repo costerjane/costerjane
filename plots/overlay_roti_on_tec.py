@@ -3,8 +3,8 @@
 
 Matches the TEC map window:
   2025-11-12 (day 316) UT 04:20-04:40, lon -160..-40, lat 0..70
-  ROTI filled circles for values in [0.2, 1.0] TECU/s
-  Single high-contrast color; marker size scales with ROTI
+  ROTI gray x markers for values in [0.2, 1.0] TECU/s
+  Marker size scales with ROTI
 """
 
 from __future__ import annotations
@@ -23,10 +23,8 @@ MAP_TOP, MAP_BOTTOM = 113, 488
 LON_MIN, LON_MAX = -160.0, -40.0
 LAT_MIN, LAT_MAX = 0.0, 70.0
 ROTI_MIN, ROTI_MAX = 0.2, 1.0
-SIZE_MIN, SIZE_MAX = 8.0, 90.0  # matplotlib scatter point areas
-# Solid black — high contrast on rainbow TEC and white no-data gaps
-FACE_COLOR = "#000000"
-EDGE_COLOR = "#000000"
+SIZE_MIN, SIZE_MAX = 12.0, 120.0  # x markers
+MARKER_COLOR = "#666666"
 
 
 def load_roti(
@@ -114,14 +112,13 @@ def main() -> None:
         x,
         y,
         s=sizes,
-        c=FACE_COLOR,
-        alpha=0.75,
-        edgecolors=EDGE_COLOR,
-        linewidths=0.25,
+        c=MARKER_COLOR,
+        marker="x",
+        linewidths=1.1,
+        alpha=0.85,
         zorder=5,
     )
 
-    # Size legend in its own left panel (avoids clipping)
     lax = fig.add_axes([0.025, 0.25, 0.12, 0.48])
     lax.set_xlim(0, 1)
     lax.set_ylim(0, 1)
@@ -141,9 +138,9 @@ def main() -> None:
             [0.30],
             [yy],
             s=s,
-            c=FACE_COLOR,
-            edgecolors=EDGE_COLOR,
-            linewidths=0.6,
+            c=MARKER_COLOR,
+            marker="x",
+            linewidths=1.2,
             clip_on=False,
             zorder=3,
         )
@@ -161,7 +158,7 @@ def main() -> None:
     ax.text(
         0.02,
         0.02,
-        f"ROTI {ROTI_MIN:.1f}–{ROTI_MAX:.1f} (size ∝ ROTI)  |  "
+        f"ROTI {ROTI_MIN:.1f}–{ROTI_MAX:.1f} (size ∝ ROTI, gray x)  |  "
         f"n={len(roti):,}  |  2025-11-12 04:20–04:40 UT",
         transform=ax.transAxes,
         fontsize=8,
