@@ -3,7 +3,8 @@
 
 Matches the TEC map window:
   2025-11-12 (day 316) UT 04:20-04:40, lon -160..-40, lat 0..70
-  ROTI filled circles for values in [0.2, 0.8] TECU/s
+  ROTI filled circles for values in [0.2, 1.0] TECU/s
+  Marker size scales linearly with ROTI (small at 0.2, large at 1.0)
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ MAP_LEFT, MAP_RIGHT = 72, 708
 MAP_TOP, MAP_BOTTOM = 113, 488
 LON_MIN, LON_MAX = -160.0, -40.0
 LAT_MIN, LAT_MAX = 0.0, 70.0
-ROTI_MIN, ROTI_MAX = 0.2, 0.8
+ROTI_MIN, ROTI_MAX = 0.2, 1.0
+SIZE_MIN, SIZE_MAX = 8.0, 90.0  # matplotlib scatter point areas
 
 
 def load_roti(
@@ -75,14 +77,14 @@ def lonlat_to_px(lon: np.ndarray, lat: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return x, y
 
 
+def roti_to_size(roti: np.ndarray) -> np.ndarray:
+    frac = (roti - ROTI_MIN) / (ROTI_MAX - ROTI_MIN)
+    return SIZE_MIN + frac * (SIZE_MAX - SIZE_MIN)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    tec_path = Path(
-        "/home/ubuntu/.cursor/projects/workspace/assets/"
-        "3e99fdfb-b735-4418-824e-3e0c4a2189c2.png"
-    )
-    if not tec_path.exists():
-        tec_path = root / "plots" / "tec_2025-11-12_0420-0440.png"
+    tec_path = root / "plots" / "tec_2025-11-12_0420-0440.png"
     h5_path = Path("/tmp/roti_316_2025.h5")
     out_path = root / "plots" / "roti_over_tec_2025-11-12_0420-0440.png"
 
@@ -95,8 +97,9 @@ def main() -> None:
     tec = np.asarray(Image.open(tec_path))
     h, w = tec.shape[:2]
     x, y = lonlat_to_px(lon, lat)
+    sizes = roti_to_size(roti)
     order = np.argsort(roti)
-    x, y, roti = x[order], y[order], roti[order]
+    x, y, roti, sizes = x[order], y[order], roti[order], sizes[order]
 
     fig, ax = plt.subplots(figsize=(11, 7.8), dpi=140)
     ax.imshow(tec, extent=[0, w, h, 0], origin="upper")
@@ -109,26 +112,54 @@ def main() -> None:
         x,
         y,
         c=roti,
-        s=18,
+        s=sizes,
         cmap="plasma",
         norm=norm,
-        alpha=0.75,
+        alpha=0.7,
         edgecolors="k",
-        linewidths=0.25,
+        linewidths=0.2,
         zorder=5,
     )
 
     cax = fig.add_axes([0.08, 0.22, 0.015, 0.45])
     cb = fig.colorbar(sc, cax=cax)
     cb.set_label("ROTI (TECU/s)", fontsize=9)
-    cb.set_ticks([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
+    cb.set_ticks([0.2, 0.4, 0.6, 0.8, 1.0])
     cb.ax.tick_params(labelsize=8)
+
+    legend_vals = [0.2, 0.5, 0.8, 1.0]
+    legend_handles = []
+    for v in legend_vals:
+        legend_handles.append(
+            ax.scatter(
+                [],
+                [],
+                s=float(roti_to_size(np.array([v]))[0]),
+                c=[plt.cm.plasma(norm(v))],
+                edgecolors="k",
+                linewidths=0.3,
+                label=f"{v:.1f}",
+            )
+        )
+    leg = ax.legend(
+        handles=legend_handles,
+        title="ROTI size",
+        loc="lower right",
+        framealpha=0.85,
+        fontsize=8,
+        title_fontsize=8,
+        borderpad=0.6,
+        labelspacing=1.1,
+        handletextpad=0.8,
+        scatterpoints=1,
+    )
+    leg.set_zorder(7)
 
     ax.text(
         0.02,
         0.02,
-        f"ROTI {ROTI_MIN}–{ROTI_MAX} overlay  |  n={len(roti):,} pierce points  |  "
-        "2025-11-12 04:20–04:40 UT",
+        f"ROTI {ROTI_MIN:.1f}–{ROTI_MAX:.1f} overlay (size ∝ ROTI)  |  "
+        f"n={len(roti):,}  |  2025-11-12 04:20–04:40 UT",
         transform=ax.transAxes,
         fontsize=8,
         color="black",
