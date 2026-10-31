@@ -4,7 +4,7 @@
 Matches the TEC map window:
   2025-11-12 (day 316) UT 04:20-04:40, lon -160..-40, lat 0..70
   ROTI filled circles for values in [0.2, 1.0] TECU/s
-  Marker size scales linearly with ROTI (small at 0.2, large at 1.0)
+  Single high-contrast color; marker size scales with ROTI
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from pathlib import Path
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import Normalize
 from PIL import Image
 
 # Georeference of the TEC PNG (772x550), equirectangular
@@ -25,6 +24,9 @@ LON_MIN, LON_MAX = -160.0, -40.0
 LAT_MIN, LAT_MAX = 0.0, 70.0
 ROTI_MIN, ROTI_MAX = 0.2, 1.0
 SIZE_MIN, SIZE_MAX = 8.0, 90.0  # matplotlib scatter point areas
+# Magenta stands out on rainbow TEC and white no-data gaps
+FACE_COLOR = "#E6007A"
+EDGE_COLOR = "#1A1A1A"
 
 
 def load_roti(
@@ -101,75 +103,80 @@ def main() -> None:
     order = np.argsort(roti)
     x, y, roti, sizes = x[order], y[order], roti[order], sizes[order]
 
-    fig, ax = plt.subplots(figsize=(11, 7.8), dpi=140)
+    fig = plt.figure(figsize=(12.6, 8.0), dpi=140)
+    ax = fig.add_axes([0.16, 0.05, 0.82, 0.90])
     ax.imshow(tec, extent=[0, w, h, 0], origin="upper")
     ax.set_xlim(0, w)
     ax.set_ylim(h, 0)
     ax.set_axis_off()
 
-    norm = Normalize(vmin=ROTI_MIN, vmax=ROTI_MAX)
-    sc = ax.scatter(
+    ax.scatter(
         x,
         y,
-        c=roti,
         s=sizes,
-        cmap="plasma",
-        norm=norm,
-        alpha=0.7,
-        edgecolors="k",
-        linewidths=0.2,
+        c=FACE_COLOR,
+        alpha=0.8,
+        edgecolors=EDGE_COLOR,
+        linewidths=0.35,
         zorder=5,
     )
 
-    cax = fig.add_axes([0.08, 0.22, 0.015, 0.45])
-    cb = fig.colorbar(sc, cax=cax)
-    cb.set_label("ROTI (TECU/s)", fontsize=9)
-    cb.set_ticks([0.2, 0.4, 0.6, 0.8, 1.0])
-    cb.ax.tick_params(labelsize=8)
+    # Size legend in its own left panel (avoids clipping)
+    lax = fig.add_axes([0.025, 0.25, 0.12, 0.48])
+    lax.set_xlim(0, 1)
+    lax.set_ylim(0, 1)
+    lax.set_xticks([])
+    lax.set_yticks([])
+    for spine in lax.spines.values():
+        spine.set_color("#888888")
+        spine.set_linewidth(0.8)
+    lax.set_facecolor("#FAFAFA")
+    lax.set_title("ROTI", fontsize=11, pad=8, fontweight="bold")
 
     legend_vals = [0.2, 0.5, 0.8, 1.0]
-    legend_handles = []
-    for v in legend_vals:
-        legend_handles.append(
-            ax.scatter(
-                [],
-                [],
-                s=float(roti_to_size(np.array([v]))[0]),
-                c=[plt.cm.plasma(norm(v))],
-                edgecolors="k",
-                linewidths=0.3,
-                label=f"{v:.1f}",
-            )
+    ys = np.linspace(0.78, 0.22, len(legend_vals))
+    for v, yy in zip(legend_vals, ys):
+        s = float(roti_to_size(np.array([v]))[0])
+        lax.scatter(
+            [0.30],
+            [yy],
+            s=s,
+            c=FACE_COLOR,
+            edgecolors=EDGE_COLOR,
+            linewidths=0.6,
+            clip_on=False,
+            zorder=3,
         )
-    leg = ax.legend(
-        handles=legend_handles,
-        title="ROTI size",
-        loc="lower right",
-        framealpha=0.85,
+        lax.text(0.55, yy, f"{v:.1f}", va="center", ha="left", fontsize=10)
+    lax.text(
+        0.5,
+        0.06,
+        "TECU/s\n(size ∝ value)",
+        ha="center",
+        va="center",
         fontsize=8,
-        title_fontsize=8,
-        borderpad=0.6,
-        labelspacing=1.1,
-        handletextpad=0.8,
-        scatterpoints=1,
+        color="#333333",
     )
-    leg.set_zorder(7)
 
     ax.text(
         0.02,
         0.02,
-        f"ROTI {ROTI_MIN:.1f}–{ROTI_MAX:.1f} overlay (size ∝ ROTI)  |  "
+        f"ROTI {ROTI_MIN:.1f}–{ROTI_MAX:.1f} (size ∝ ROTI)  |  "
         f"n={len(roti):,}  |  2025-11-12 04:20–04:40 UT",
         transform=ax.transAxes,
         fontsize=8,
         color="black",
-        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none", pad=3),
+        bbox=dict(facecolor="white", alpha=0.85, edgecolor="none", pad=3),
         zorder=6,
     )
 
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=140, bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(
+        out_path,
+        dpi=140,
+        facecolor="white",
+        bbox_inches="tight",
+        pad_inches=0.25,
+    )
     print(f"wrote {out_path}")
     plt.close(fig)
 
