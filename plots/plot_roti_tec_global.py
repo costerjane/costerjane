@@ -2,10 +2,11 @@
 """Global ROTI/TEC map in the style of the phase-scintillation/TEC reference plot.
 
 Uses:
-  - Madrigal gridded TEC HDF5 (1 deg x 1 deg x 5 min)
-  - Madrigal ROTI HDF5 table
+  - Madrigal gridded TEC HDF5 (native 1 deg x 1 deg x 5 min)
+  - Rebinned to 3 deg x 3 deg with median over space and the 20-min window
+  - Madrigal ROTI HDF5 table as magenta x markers (size ∝ 0.2-1.0 TECU/s)
+
 Default window: 2026-03-22 13:40-14:00 UT
-ROTI shown as magenta x markers with size proportional to 0.2-1.0 TECU/s.
 """
 
 from __future__ import annotations
@@ -22,18 +23,43 @@ import numpy as np
 ROTI_MIN, ROTI_MAX = 0.2, 1.0
 SIZE_MIN, SIZE_MAX = 12.0, 140.0
 MARKER_COLOR = "#E6007A"  # magenta on viridis TEC
+BIN_DEG = 3.0
 
 
-def load_tec_mean(tec_path: Path, t0: float, t1: float):
+def load_tec_median_3deg(tec_path: Path, t0: float, t1: float):
+    """Median TEC in 3x3 deg bins over all 1-deg cells and times in [t0, t1)."""
     with h5py.File(tec_path, "r") as f:
         ts = f["Data/Array Layout/timestamps"][:]
-        lat = f["Data/Array Layout/gdlat"][:]
-        lon = f["Data/Array Layout/glon"][:]
+        lat1 = f["Data/Array Layout/gdlat"][:]
+        lon1 = f["Data/Array Layout/glon"][:]
         idx = np.where((ts >= t0) & (ts < t1))[0]
         if idx.size == 0:
             raise ValueError("No TEC timestamps in requested window")
-        tec = np.nanmean(f["Data/Array Layout/2D Parameters/tec"][:, :, idx], axis=2)
-    return lat, lon, tec
+        tec_stack = f["Data/Array Layout/2D Parameters/tec"][:, :, idx]
+
+    lat_edges = np.arange(-90.0, 90.0 + BIN_DEG, BIN_DEG)
+    lon_edges = np.arange(-180.0, 180.0 + BIN_DEG, BIN_DEG)
+    nlat_b = len(lat_edges) - 1
+    nlon_b = len(lon_edges) - 1
+    tec3 = np.full((nlat_b, nlon_b), np.nan, dtype=float)
+
+    lat_bin = np.clip(np.digitize(lat1, lat_edges) - 1, 0, nlat_b - 1)
+    lon_bin = np.clip(np.digitize(lon1, lon_edges) - 1, 0, nlon_b - 1)
+
+    for i in range(nlat_b):
+        lat_m = lat_bin == i
+        if not lat_m.any():
+            continue
+        for j in range(nlon_b):
+            lon_m = lon_bin == j
+            if not lon_m.any():
+                continue
+            block = tec_stack[np.ix_(lat_m, lon_m)]
+            vals = block[np.isfinite(block)]
+            if vals.size:
+                tec3[i, j] = float(np.median(vals))
+
+    return lat_edges, lon_edges, tec3
 
 
 def load_roti(roti_path: Path, t0: float, t1: float):
@@ -82,8 +108,9 @@ def main() -> None:
     t0 = datetime(2026, 3, 22, 13, 40, 0, tzinfo=timezone.utc).timestamp()
     t1 = datetime(2026, 3, 22, 14, 0, 0, tzinfo=timezone.utc).timestamp()
 
-    lat, lon, tec = load_tec_mean(tec_path, t0, t1)
+    lat_edges, lon_edges, tec = load_tec_median_3deg(tec_path, t0, t1)
     rlon, rlat, roti = load_roti(roti_path, t0, t1)
+    print(f"TEC grid: {tec.shape[0]} x {tec.shape[1]} ({BIN_DEG:.0f} deg bins)")
     print(f"ROTI points: {len(roti)}")
 
     sizes = roti_to_size(roti)
@@ -95,8 +122,6 @@ def main() -> None:
     ax.set_global()
     ax.set_facecolor("white")
 
-    lon_edges = np.concatenate([lon - 0.5, [lon[-1] + 0.5]])
-    lat_edges = np.concatenate([lat - 0.5, [lat[-1] + 0.5]])
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad(alpha=0.0)
     tec_masked = np.ma.masked_invalid(tec)
