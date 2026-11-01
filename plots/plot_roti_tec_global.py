@@ -5,7 +5,7 @@ Uses:
   - Madrigal gridded TEC HDF5 (1 deg x 1 deg x 5 min)
   - Madrigal ROTI HDF5 table
 Default window: 2026-03-22 13:40-14:00 UT
-ROTI shown as gray x markers with size proportional to 0.2-1.0 TECU/s.
+ROTI shown as magenta x markers with size proportional to 0.2-1.0 TECU/s.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import numpy as np
 
 ROTI_MIN, ROTI_MAX = 0.2, 1.0
 SIZE_MIN, SIZE_MAX = 12.0, 140.0
-MARKER_COLOR = "#555555"
+MARKER_COLOR = "#E6007A"  # magenta on viridis TEC
 
 
 def load_tec_mean(tec_path: Path, t0: float, t1: float):
@@ -140,8 +140,8 @@ def main() -> None:
         s=sizes,
         c=MARKER_COLOR,
         marker="x",
-        linewidths=1.0,
-        alpha=0.9,
+        linewidths=1.15,
+        alpha=0.95,
         transform=ccrs.PlateCarree(),
         zorder=5,
     )
@@ -162,7 +162,7 @@ def main() -> None:
                 s=s,
                 c=MARKER_COLOR,
                 marker="x",
-                linewidths=1.1,
+                linewidths=1.2,
                 label=f"ROTI {v:.1f}",
             )
         )
