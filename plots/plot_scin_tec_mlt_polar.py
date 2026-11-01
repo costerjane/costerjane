@@ -176,7 +176,7 @@ def main() -> None:
         s=7,
         cmap="viridis",
         vmin=0,
-        vmax=50,
+        vmax=35,
         linewidths=0,
         alpha=0.95,
         rasterized=True,
@@ -234,8 +234,9 @@ def main() -> None:
         ax_leg.text(0.26, yy, lab, fontsize=9, va="center")
         yy -= 0.10
 
-    cb = fig.colorbar(tec_sc, cax=cax)
+    cb = fig.colorbar(tec_sc, cax=cax, extend="max")
     cb.set_label("Vertical TEC (TECU)", fontsize=11)
+    cb.set_ticks([0, 5, 10, 15, 20, 25, 30, 35])
 
     n_sig = int(np.sum(sph >= 0.1))
     fig.suptitle(
