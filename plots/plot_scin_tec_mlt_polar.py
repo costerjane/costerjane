@@ -183,14 +183,15 @@ def main() -> None:
         zorder=2,
     )
 
+    # Marker areas sized like the reference polar maps (largest very prominent)
     bins = [
-        (None, 0.1, 9, "#2ca02c", "No significant SigmaPhi"),
-        (0.1, 0.2, 20, "#d62728", "SigmaPhi 0.1 – 0.2"),
-        (0.2, 0.3, 34, "#d62728", "SigmaPhi 0.2 – 0.3"),
-        (0.3, 0.4, 50, "#d62728", "SigmaPhi 0.3 – 0.4"),
-        (0.4, 0.5, 70, "#d62728", "SigmaPhi 0.4 – 0.5"),
-        (0.5, 0.6, 92, "#d62728", "SigmaPhi 0.5 – 0.6"),
-        (0.6, None, 120, "#d62728", "SigmaPhi > 0.6"),
+        (None, 0.1, 22, "#2ca02c", "No significant SigmaPhi"),
+        (0.1, 0.2, 80, "#d62728", "SigmaPhi 0.1 – 0.2"),
+        (0.2, 0.3, 150, "#d62728", "SigmaPhi 0.2 – 0.3"),
+        (0.3, 0.4, 250, "#d62728", "SigmaPhi 0.3 – 0.4"),
+        (0.4, 0.5, 380, "#d62728", "SigmaPhi 0.4 – 0.5"),
+        (0.5, 0.6, 550, "#d62728", "SigmaPhi 0.5 – 0.6"),
+        (0.6, None, 750, "#d62728", "SigmaPhi > 0.6"),
     ]
     th_s, r_s = mlt_mlat_to_polar(sc_mlt, sc_mlat)
     for lo, hi, size, color, _lab in bins:
