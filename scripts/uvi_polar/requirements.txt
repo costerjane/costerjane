@@ -6,5 +6,6 @@ scipy
 tqdm
 cartopy
 aacgmv2
+astropy
 imageio
 imageio-ffmpeg
