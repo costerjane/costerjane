@@ -41,6 +41,7 @@ bash scripts/uvi_polar/make_movie.sh /path/to/frames /path/to/out.mp4
 
 - Public inputs are **QL PNGs**, not private L1/L2 CDFs — intensity is relative
   display brightness, not calibrated Rayleighs.
-- UVI mounting uses PLM \(+Z\) tipped by \(R_y(+24^\circ)\) (mission papers); limb-fit
-  tip-only refinement absorbs residual pointing error without scrambling roll.
+- UVI mounting uses PLM \(+Z\) tipped by \(R_y(+24^\circ)\) (mission papers); camera
+  \(+\)column from body \(-Y\), with QL row-axis flip. Limb-fit tip-only refinement
+  absorbs residual pointing error without scrambling roll.
 - Not an official SOC/SAS product; do not publish as calibrated L2.

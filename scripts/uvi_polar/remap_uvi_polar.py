@@ -256,15 +256,16 @@ def _attitude_camera(sc_pos: np.ndarray, quat_xyzw: np.ndarray):
     bore = R @ uvi_boresight_body()
     bore /= np.linalg.norm(bore)
     ang_earth = float(np.degrees(np.arccos(np.clip(bore @ earth_dir, -1.0, 1.0))))
-    by = R @ np.array([0.0, 1.0, 0.0])
+    # Camera +column from body -Y (not +Y). Validated against AACGM quicklook
+    # references at 2026-10-05 01:39 / 05:19 UT: dayglow on dawn/left, Greenland
+    # near midnight/bottom — body +Y put those features 180° out.
+    by = R @ np.array([0.0, -1.0, 0.0])
     x0 = by - bore * (by @ bore)
     if np.linalg.norm(x0) < 1e-8:
         by = R @ np.array([1.0, 0.0, 0.0])
         x0 = by - bore * (by @ bore)
     x0 /= np.linalg.norm(x0)
-    # Image +row is down. Empirically the UVI QL PNGs need the opposite sense
-    # of the RH (x × y = bore) row axis to recover an auroral oval around the
-    # magnetic pole (validated vs 2026-10-05 01:24/01:25 UT reference frames).
+    # Image +row is down. QL PNGs need the opposite of RH (x × y = bore).
     y0 = -np.cross(bore, x0)
     return bore, x0, y0, earth_dir, ang_earth
 
@@ -291,9 +292,9 @@ def build_camera(
     if ang_earth > 45.0:
         if earth_px is None:
             return None
-        # Far off; seed with geocenter pointing but keep body-Y roll sense
+        # Far off; seed with geocenter pointing but keep body -Y roll sense
         bore = earth_dir.copy()
-        by = quat_to_R(quat_xyzw) @ np.array([0.0, 1.0, 0.0])
+        by = quat_to_R(quat_xyzw) @ np.array([0.0, -1.0, 0.0])
         x0 = by - bore * (by @ bore)
         if np.linalg.norm(x0) < 1e-8:
             return None
@@ -482,6 +483,12 @@ def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
             zorder=2,
         )
         im.set_clip_path(Circle((0, 0), 1.0, transform=ax.transData))
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, orientation="horizontal")
+        cbar.set_label("Ultraviolet brightness (relative)", color="white")
+        cbar.ax.xaxis.set_tick_params(color="white")
+        plt.setp(plt.getp(cbar.ax.axes, "xticklabels"), color="white")
+        cbar.ax.set_xticks([vmin, vmax])
+        cbar.ax.set_xticklabels(["Dim", "Bright"])
 
     for mlat_ring in [50, 60, 70, 80]:
         r = (90 - mlat_ring) / (90 - MLAT_MIN)
