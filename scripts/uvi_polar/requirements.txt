@@ -1,0 +1,10 @@
+cdflib
+numpy
+matplotlib
+pillow
+scipy
+tqdm
+cartopy
+aacgmv2
+imageio
+imageio-ffmpeg
