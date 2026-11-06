@@ -5,7 +5,7 @@ Follows the L2-style geometric chain:
   UVI image + SC position/attitude
   -> per-pixel camera LOS
   -> intersect emission shell at R_E + 110 km
-  -> GEO (GMST)
+  -> GEO (ITRS)
   -> AACGM MLAT / MLT
   -> polar plot with AACGM coastlines
 
@@ -13,9 +13,9 @@ Camera model:
   - Body +Z is PLM normal; UVI optical axis is Ry(+24 deg)*+Z in the body frame
     (Zhang et al. 2025; SMILE spacecraft paper: SXI/UVI 24 deg offset in Z/X).
   - Quaternion_J2000 (qx,qy,qz,qw) rotates body -> J2000.
-  - When the Earth disk is detectable in the QL PNG, boresight/roll are refined
-    so the LOS through the Earth-disk centroid points at geocenter (fixes residual
-    mounting/attitude error; critical for correct polar morphology).
+  - When the Earth disk is detectable, apply a *tip-only* correction that maps
+    the LOS through the limb-fit Earth center onto the geocenter direction,
+    preserving attitude roll (critical for FOV morphology).
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ import cartopy.io.shapereader as shpreader
 import cdflib
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.colors import Normalize, PowerNorm
+from matplotlib.colors import PowerNorm
+from matplotlib.patches import Circle
 from PIL import Image
 from scipy import ndimage
 from scipy.interpolate import griddata
@@ -121,8 +122,66 @@ def load_intensity(png: Path) -> np.ndarray:
     return inten
 
 
+def expected_earth_radius_px(sc_pos: np.ndarray) -> float:
+    r = float(np.linalg.norm(sc_pos))
+    ang = np.degrees(np.arcsin(min(0.999999, RE_KM / r)))
+    return ang / (FOV_DEG / IMG_SIZE)
+
+
+def detect_earth_center(
+    inten: np.ndarray, sc_pos: np.ndarray
+) -> tuple[float, float, float] | None:
+    """Limb-based Earth center using expected angular radius from SC range.
+
+    Brightness-weighted centroids bias toward the aurora and distort FOV
+    morphology; instead fit the right-hand limb with the known Earth size.
+    """
+    valid = np.isfinite(inten)
+    if valid.sum() < 1000:
+        return None
+    vals = inten[valid]
+    thr = np.nanpercentile(vals, 55)
+    mask = valid & (inten > thr)
+    mask = ndimage.binary_opening(mask, iterations=1)
+    mask = ndimage.binary_closing(mask, iterations=2)
+    lab, n = ndimage.label(mask)
+    if n == 0:
+        return None
+    sizes = ndimage.sum(mask, lab, index=np.arange(1, n + 1))
+    earth = lab == (1 + int(np.argmax(sizes)))
+    if earth.sum() < 2000:
+        return None
+
+    exp_r = expected_earth_radius_px(sc_pos)
+    yy, xx = np.indices(inten.shape)
+    limb_x: list[float] = []
+    limb_y: list[float] = []
+    for y in range(IMG_SIZE):
+        xs = xx[y][earth[y]]
+        if xs.size > 10:
+            limb_x.append(float(xs.max()))
+            limb_y.append(float(y))
+    if len(limb_x) < 30:
+        return None
+    limb_x_a = np.asarray(limb_x)
+    limb_y_a = np.asarray(limb_y)
+    cy = 0.5 * (limb_y_a.min() + limb_y_a.max())
+    dy = limb_y_a - cy
+    ok = np.abs(dy) < exp_r * 0.95
+    if ok.sum() < 20:
+        return None
+    cx_est = limb_x_a[ok] - np.sqrt(np.maximum(exp_r**2 - dy[ok] ** 2, 0.0))
+    cx = float(np.median(cx_est))
+    cy = float(cy)
+    if not (40.0 < cx < 470.0 and 40.0 < cy < 470.0):
+        return None
+    if exp_r < 40 or exp_r > 240:
+        return None
+    return cx, cy, float(exp_r)
+
+
 def detect_earth_centroid(inten: np.ndarray) -> tuple[float, float, float] | None:
-    """Return (cx, cy, radius_px) of Earth disk, or None if not found."""
+    """Legacy brightness centroid (kept for diagnostics only)."""
     valid = np.isfinite(inten)
     if valid.sum() < 1000:
         return None
@@ -143,7 +202,6 @@ def detect_earth_centroid(inten: np.ndarray) -> tuple[float, float, float] | Non
     cy = float((yy[earth] * w[earth]).sum() / w[earth].sum())
     rad = np.sqrt((xx[earth] - cx) ** 2 + (yy[earth] - cy) ** 2)
     r90 = float(np.percentile(rad, 90))
-    # Sanity: Earth angular size should be plausible for SMILE distances
     if r90 < 40 or r90 > 240:
         return None
     return cx, cy, r90
@@ -192,6 +250,29 @@ def j2000_to_geodetic(pos_km: np.ndarray, dt: datetime) -> tuple[np.ndarray, np.
         return lat, lon
 
 
+def _attitude_camera(sc_pos: np.ndarray, quat_xyzw: np.ndarray):
+    R = quat_to_R(quat_xyzw)  # body -> J2000
+    earth_dir = -sc_pos / np.linalg.norm(sc_pos)
+    bore = R @ uvi_boresight_body()
+    bore /= np.linalg.norm(bore)
+    ang_earth = float(np.degrees(np.arccos(np.clip(bore @ earth_dir, -1.0, 1.0))))
+    by = R @ np.array([0.0, 1.0, 0.0])
+    x0 = by - bore * (by @ bore)
+    if np.linalg.norm(x0) < 1e-8:
+        by = R @ np.array([1.0, 0.0, 0.0])
+        x0 = by - bore * (by @ bore)
+    x0 /= np.linalg.norm(x0)
+    # Image +row is down. Empirically the UVI QL PNGs need the opposite sense
+    # of the RH (x × y = bore) row axis to recover an auroral oval around the
+    # magnetic pole (validated vs 2026-10-05 01:24/01:25 UT reference frames).
+    y0 = -np.cross(bore, x0)
+    return bore, x0, y0, earth_dir, ang_earth
+
+
+def _rodrigues(v: np.ndarray, k: np.ndarray, c: float, s: float) -> np.ndarray:
+    return v * c + np.cross(k, v) * s + k * (k @ v) * (1.0 - c)
+
+
 def build_camera(
     sc_pos: np.ndarray,
     quat_xyzw: np.ndarray,
@@ -200,71 +281,55 @@ def build_camera(
     """Return (boresight, xhat, yhat) in J2000, or None if Earth not in FOV.
 
     xhat = +column (right), yhat = +row (down), RH with boresight.
+
+    Earth-disk refinement is *tip-only*: rotate the attitude camera by the
+    minimal rotation that maps the LOS through the Earth-center pixel onto the
+    geocenter direction. Roll about that axis stays locked to MEAS-ATT.
     """
-    R = quat_to_R(quat_xyzw)  # body -> J2000
-    earth_dir = -sc_pos / np.linalg.norm(sc_pos)
+    bore, x0, y0, earth_dir, ang_earth = _attitude_camera(sc_pos, quat_xyzw)
 
-    # Nominal UVI boresight from mounting + attitude
-    bore = R @ uvi_boresight_body()
-    bore /= np.linalg.norm(bore)
-    ang_earth = float(np.degrees(np.arccos(np.clip(bore @ earth_dir, -1.0, 1.0))))
-
-    # If attitude-based boresight points away from Earth, fall back to geocenter
-    # pointing only when the Earth disk is visible in the image.
     if ang_earth > 45.0:
         if earth_px is None:
             return None
+        # Far off; seed with geocenter pointing but keep body-Y roll sense
         bore = earth_dir.copy()
-
-    # Nominal camera x from body +Y projected into focal plane
-    by = R @ np.array([0.0, 1.0, 0.0])
-    x0 = by - bore * (by @ bore)
-    if np.linalg.norm(x0) < 1e-8:
-        by = R @ np.array([1.0, 0.0, 0.0])
+        by = quat_to_R(quat_xyzw) @ np.array([0.0, 1.0, 0.0])
         x0 = by - bore * (by @ bore)
-    x0 /= np.linalg.norm(x0)
-    y0 = np.cross(bore, x0)  # RH: x × y = bore
+        if np.linalg.norm(x0) < 1e-8:
+            return None
+        x0 /= np.linalg.norm(x0)
+        y0 = -np.cross(bore, x0)
 
     if earth_px is None:
-        # Require Earth roughly in FOV (half-FOV ~5 deg + margin)
         if ang_earth > 8.0:
             return None
         return bore, x0, y0
 
-    # Refine so LOS through Earth centroid equals geocenter direction.
     ex, ey, _r = earth_px
-    plate = FOV_DEG / IMG_SIZE  # deg / pixel
+    plate = FOV_DEG / IMG_SIZE
     ax = (ex - 255.5) * plate
     ay = (ey - 255.5) * plate
-
-    best = None
-    for roll in np.linspace(0.0, 360.0, 721, endpoint=False):
-        ca, sa = np.cos(np.deg2rad(roll)), np.sin(np.deg2rad(roll))
-        xhat = ca * x0 + sa * y0
-        yhat = np.cross(bore, xhat)
-        db, dx, dy = earth_dir @ bore, earth_dir @ xhat, earth_dir @ yhat
-        if db <= 0:
-            continue
-        ax_p = np.degrees(np.arctan2(dx, db))
-        ay_p = np.degrees(np.arctan2(dy, db))
-        err = (ax_p - ax) ** 2 + (ay_p - ay) ** 2
-        if best is None or err < best[0]:
-            best = (err, xhat, yhat)
-
-    if best is None:
+    v0 = bore + np.tan(np.deg2rad(ax)) * x0 + np.tan(np.deg2rad(ay)) * y0
+    v0 /= np.linalg.norm(v0)
+    v1 = earth_dir
+    c = float(np.clip(v0 @ v1, -1.0, 1.0))
+    if c > 0.999999:
         return bore, x0, y0
-    _err, xhat, yhat = best
-
-    bore2 = earth_dir - np.tan(np.deg2rad(ax)) * xhat - np.tan(np.deg2rad(ay)) * yhat
-    if np.linalg.norm(bore2) < 1e-8:
-        return bore, xhat, yhat
+    k = np.cross(v0, v1)
+    kn = np.linalg.norm(k)
+    if kn < 1e-12:
+        return bore, x0, y0
+    k /= kn
+    s = float(np.sin(np.arccos(c)))
+    bore2 = _rodrigues(bore, k, c, s)
     bore2 /= np.linalg.norm(bore2)
-    xhat2 = xhat - bore2 * (xhat @ bore2)
-    if np.linalg.norm(xhat2) < 1e-8:
-        return bore2, xhat, yhat
-    xhat2 /= np.linalg.norm(xhat2)
-    yhat2 = np.cross(bore2, xhat2)
-    return bore2, xhat2, yhat2
+    x2 = _rodrigues(x0, k, c, s)
+    x2 = x2 - bore2 * (x2 @ bore2)
+    if np.linalg.norm(x2) < 1e-8:
+        return bore2, x0, y0
+    x2 /= np.linalg.norm(x2)
+    y2 = -np.cross(bore2, x2)
+    return bore2, x2, y2
 
 
 def remap_frame(
@@ -274,7 +339,7 @@ def remap_frame(
     dt: datetime,
     step: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    earth_px = detect_earth_centroid(inten)
+    earth_px = detect_earth_center(inten, sc_pos)
     cam = build_camera(sc_pos, quat_xyzw, earth_px)
     if cam is None:
         return np.array([]), np.array([]), np.array([])
@@ -342,7 +407,7 @@ def remap_frame(
 
 
 def mlt_mlat_to_xy(mlt: np.ndarray, mlat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    # Noon at top, midnight at bottom; MLT increases eastward (CCW from noon in this x=sin,y=cos)
+    # Noon at top, midnight at bottom; dawn (06) left, dusk (18) right
     theta = np.deg2rad((mlt - 12.0) * 15.0)
     r = (90.0 - mlat) / (90.0 - MLAT_MIN)
     return r * np.sin(theta), r * np.cos(theta)
@@ -380,7 +445,6 @@ def coast_segments(dt: datetime) -> list[tuple[np.ndarray, np.ndarray]]:
                 if good.sum() < 2:
                     continue
                 x, y = mlt_mlat_to_xy(mlt, mlat)
-                # Break across invalid gaps so we don't draw long chords
                 x = np.where(good, x, np.nan)
                 y = np.where(good, y, np.nan)
                 segs.append((x, y))
@@ -398,12 +462,12 @@ def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
     ax.axis("off")
     ax.set_facecolor("black")
     fig.patch.set_facecolor("black")
-    ax.add_patch(plt.Circle((0, 0), 1.0, color="#02040a", zorder=0))
+    ax.add_patch(Circle((0, 0), 1.0, color="#000000", zorder=0))
 
     if len(vals) > 50:
         x, y = mlt_mlat_to_xy(mlt, mlat)
-        xi = np.linspace(-1, 1, 420)
-        yi = np.linspace(-1, 1, 420)
+        xi = np.linspace(-1, 1, 480)
+        yi = np.linspace(-1, 1, 480)
         XX, YY = np.meshgrid(xi, yi)
         RR = np.sqrt(XX**2 + YY**2)
         Zi = griddata((x, y), vals, (XX, YY), method="linear")
@@ -417,21 +481,25 @@ def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
             shading="auto",
             zorder=2,
         )
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, orientation="horizontal")
-        cbar.set_label("Ultraviolet brightness (relative)", color="white")
-        cbar.ax.xaxis.set_tick_params(color="white")
-        plt.setp(plt.getp(cbar.ax.axes, "xticklabels"), color="white")
-        cbar.ax.set_xticks([vmin, vmax])
-        cbar.ax.set_xticklabels(["Dim", "Bright"])
+        im.set_clip_path(Circle((0, 0), 1.0, transform=ax.transData))
 
     for mlat_ring in [50, 60, 70, 80]:
         r = (90 - mlat_ring) / (90 - MLAT_MIN)
         ax.add_patch(
-            plt.Circle((0, 0), r, fill=False, ls="--", lw=0.7, color="white", alpha=0.55, zorder=3)
+            Circle((0, 0), r, fill=False, ls="--", lw=0.7, color="white", alpha=0.55, zorder=3)
         )
-        ax.text(0.02, r + 0.015, f"{mlat_ring}°", color="0.85", fontsize=8)
-    ax.text(0.72, 0.42, "70° MLAT", color="#7ec8ff", fontsize=8)
-    ax.text(0.82, 0.72, "60° MLAT", color="#7ec8ff", fontsize=8)
+        ax.text(
+            -0.04,
+            r + 0.012,
+            f"{mlat_ring}°",
+            color="white",
+            fontsize=8,
+            ha="right",
+            bbox=dict(boxstyle="square,pad=0.15", fc="black", ec="none", alpha=0.75),
+            zorder=6,
+        )
+    ax.text(0.72, 0.42, "70° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
+    ax.text(0.82, 0.72, "60° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
 
     for mlt_h in range(0, 24, 3):
         x0, y0 = mlt_mlat_to_xy(np.array([float(mlt_h)]), np.array([MLAT_MIN]))
@@ -488,7 +556,7 @@ def main():
     print(f"Rendering {len(selected)} frames from {selected[0][0]} to {selected[-1][0]}")
 
     sample = []
-    for dt, fp in selected[:: max(1, len(selected) // 6)]:
+    for dt, fp in selected[:: max(1, len(selected) // 8)]:
         sc = interp_row(aux.unix, aux.pos_j2000_km, dt.timestamp())
         q = interp_row(aux.unix, aux.quat_xyzw, dt.timestamp())
         _, _, vals = remap_frame(load_intensity(fp), sc, q, dt, step=max(args.step_px, 2))
@@ -506,9 +574,9 @@ def main():
         w.writerow(["frame", "time_ut", "n_samples", "earth_px", "path"])
         for i, (dt, fp) in enumerate(tqdm(selected)):
             inten = load_intensity(fp)
-            earth = detect_earth_centroid(inten)
             sc = interp_row(aux.unix, aux.pos_j2000_km, dt.timestamp())
             q = interp_row(aux.unix, aux.quat_xyzw, dt.timestamp())
+            earth = detect_earth_center(inten, sc)
             mlat, mlt, vals = remap_frame(inten, sc, q, dt, step=args.step_px)
             out = args.frame_dir / f"frame_{i:04d}_{dt.strftime('%H%M%S')}.png"
             render_polar(mlat, mlt, vals, dt, out, vmin=vmin, vmax=vmax)
