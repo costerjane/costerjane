@@ -53,7 +53,7 @@ RE_KM = 6371.0
 EMISSION_ALT_KM = 110.0
 FOV_DEG = 9.97
 IMG_SIZE = 512
-LAT_MIN = 50.0
+LAT_MIN = 40.0  # geographic polar view extends from N pole down to 40°N
 # Fixed geographic orientation: 90°W (central Canada / contiguous US) at bottom.
 LON_BOTTOM_DEG = -90.0
 UVI_MOUNT_Y_DEG = 24.0  # UVI optical axis = Ry(+24°)·+Z in body frame
@@ -563,14 +563,16 @@ def render_polar(lat, lon, vals, dt: datetime, out_path: Path, vmin, vmax):
         cbar.ax.set_xticks([vmin, vmax])
         cbar.ax.set_xticklabels(["Dim", "Bright"])
 
-    for lat_ring in [50, 60, 70, 80]:
+    for lat_ring in [40, 50, 60, 70, 80]:
         r = (90 - lat_ring) / (90 - LAT_MIN)
         ax.add_patch(
             Circle((0, 0), r, fill=False, ls="--", lw=0.7, color="white", alpha=0.55, zorder=3)
         )
+        # Outer (40°) ring coincides with the disk edge — place label just inside.
+        label_y = r - 0.035 if lat_ring == int(LAT_MIN) else r + 0.012
         ax.text(
             -0.04,
-            r + 0.012,
+            label_y,
             f"{lat_ring}°",
             color="white",
             fontsize=8,

@@ -4,10 +4,10 @@ Remaps public EMDS UVI **camera-frame** quicklook PNGs onto a north-pole
 **geographic** map and builds a movie.
 
 Official SMILE UVI polar quicklooks are geographic (not AACGM/MLT): the plot is
-centered on the **geographic North Pole**, with a fixed longitude orientation
-so **North America / the contiguous US sits at the bottom**. The auroral oval
-is a ring around the magnetic pole and therefore appears offset from the plot
-center — that is expected.
+centered on the **geographic North Pole**, extending down to **40°N**, with a
+fixed longitude orientation so **North America / the contiguous US sits at the
+bottom**. The auroral oval is a ring around the magnetic pole and therefore
+appears offset from the plot center — that is expected.
 
 ## Geometric chain (required)
 
