@@ -1,13 +1,11 @@
-# SMILE UVI polar (geographic) remapping
+# SMILE UVI polar (AACGM MLAT/MLT) remapping
 
 Remaps public EMDS UVI **camera-frame** quicklook PNGs onto a north-pole
-**geographic** map and builds a movie.
+**AACGM MLAT / MLT** map and builds a movie.
 
-Official SMILE UVI polar quicklooks are geographic (not AACGM/MLT): the plot is
-centered on the **geographic North Pole**, extending down to **40°N**, with a
-fixed longitude orientation so **North America / the contiguous US sits at the
-bottom**. The auroral oval is a ring around the magnetic pole and therefore
-appears offset from the plot center — that is expected.
+The polar view is centered on the **magnetic pole**, extending down to
+**40° MLAT**, with noon (12 MLT) at top and midnight (00 MLT) at bottom. The
+auroral oval is therefore a centered ring around the plot origin.
 
 ## Geometric chain (required)
 
@@ -16,10 +14,9 @@ appears offset from the plot center — that is expected.
    Earth center applies a **tip-only** correction so the geocenter LOS matches
    the Earth disk while preserving MEAS-ATT roll)  
 3. Intersect each LOS with the emission shell at \(R_E + 110\,\mathrm{km}\)  
-4. Convert hit points J2000 → GEO (ITRS) lat/lon  
-5. Plot on a geographic polar grid (latitude rings, longitude meridians,
-   geographic coastlines, solar terminator). Optional AACGM MLAT text anchors
-   match the official QL annotations.
+4. Convert hit points J2000 → GEO (ITRS) → AACGM **MLAT / MLT**  
+5. Plot on a polar grid (MLAT rings 40/50/60/70/80°, MLT spokes, AACGM-warped
+   coastlines, noon–midnight meridian)
 
 ## Public coverage notes
 
@@ -44,9 +41,6 @@ python scripts/uvi_polar/remap_uvi_polar.py \
 
 bash scripts/uvi_polar/make_movie.sh /path/to/frames /path/to/out.mp4
 ```
-
-`--lon-bottom` (default `-90`) sets which geographic longitude sits at the
-bottom of the polar disk.
 
 ## Caveats
 
