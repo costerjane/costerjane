@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
-"""Remap SMILE UVI quicklook PNGs onto a north-pole AACGM MLAT/MLT map.
+"""Remap SMILE UVI quicklook PNGs onto a north-pole geographic map.
 
 Follows the L2-style geometric chain:
   UVI image + SC position/attitude
   -> per-pixel camera LOS
   -> intersect emission shell at R_E + 110 km
-  -> GEO (ITRS)
-  -> AACGM MLAT / MLT
-  -> polar plot with AACGM-warped coastlines
+  -> GEO (ITRS) lat/lon
+  -> polar plot centered on the geographic North Pole
 
-Geomagnetic polar view extends from the magnetic pole down to 40° MLAT.
-Orientation: noon (12 MLT) at top, midnight (00 MLT) at bottom; dawn left,
-dusk right. The auroral oval is centered on the magnetic pole.
+SMILE science-mode attitude is sun-locked (body +Y ≈ GSE +Y = Sun–Earth plane
+normal). Default plot orientation is likewise sun-synchronous: subsolar
+longitude on the left (dayglow fixed left; continents rotate under the sun
+lock). Use --lon-bottom for a fixed geographic bottom (e.g. -90 for US down).
 
 Camera model:
-  - Body +Z is PLM normal; UVI optical axis is Ry(+mount_deg)*+Z in the body frame
-    (Zhang et al. 2025 cites 24°; adjustable --mount-deg, default 25° for the
-    PLM/SXI “25° filter” mount tip used here).
+  - Body +Z is PLM normal; UVI tipped in the Sun–Earth plane toward Earth
+    (auto tip from MEAS-ATT Z–Earth angle by default; --mount-deg to force).
   - Quaternion_J2000 (qx,qy,qz,qw) rotates body -> J2000.
-  - When the Earth disk is detectable, apply a *tip-only* correction that maps
-    the LOS through the limb-fit Earth center onto the geocenter direction,
-    preserving attitude roll (critical for FOV morphology).
+  - Camera roll from −Sun×Earth (≈ body −Y); tip-only limb fit then re-applies
+    that sun-synchronous roll.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import aacgmv2
 import cartopy.io.shapereader as shpreader
 import cdflib
 import matplotlib.pyplot as plt
@@ -46,14 +43,22 @@ from scipy import ndimage
 from scipy.interpolate import griddata
 from tqdm import tqdm
 
+try:
+    import aacgmv2
+except ImportError:  # optional: only used for MLAT annotation contours
+    aacgmv2 = None
+
 RE_KM = 6371.0
 EMISSION_ALT_KM = 110.0
 FOV_DEG = 9.97
 IMG_SIZE = 512
-MLAT_MIN = 40.0  # geomagnetic polar view extends from mag pole down to 40° MLAT
-UVI_MOUNT_Y_DEG = 25.0  # UVI optical axis = Ry(+mount)·+Z; 25° filter / mount tip
+LAT_MIN = 40.0  # geographic polar view extends from N pole down to 40°N
+# Plot orientation: None => sun-sync (subsolar lon at left); else fixed lon at bottom.
+LON_BOTTOM_DEG: float | None = None
+UVI_MOUNT_Y_DEG = -1.0  # <0 => auto tip from Z–Earth; else Ry(+mount)·+Z
 
-logging.getLogger("aacgmv2").setLevel(logging.ERROR)
+if aacgmv2 is not None:
+    logging.getLogger("aacgmv2").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
@@ -110,10 +115,53 @@ def roty(deg: float) -> np.ndarray:
     return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
 
 
-def uvi_boresight_body() -> np.ndarray:
-    # PLM normal = +Z; UVI optical axis tipped about +Y toward +X (Earth)
-    v = roty(UVI_MOUNT_Y_DEG) @ np.array([0.0, 0.0, 1.0])
+def uvi_boresight_body(mount_deg: float | None = None) -> np.ndarray:
+    tip = UVI_MOUNT_Y_DEG if mount_deg is None else mount_deg
+    v = roty(tip) @ np.array([0.0, 0.0, 1.0])
     return v / np.linalg.norm(v)
+
+
+def sun_hat_j2000(dt: datetime) -> np.ndarray:
+    try:
+        from astropy.coordinates import get_body, SkyCoord
+        from astropy.time import Time
+        import astropy.units as u
+
+        sun = get_body("sun", Time(dt))
+        v = (
+            SkyCoord(
+                ra=sun.ra,
+                dec=sun.dec,
+                frame="gcrs",
+                obstime=Time(dt),
+                distance=1 * u.au,
+            )
+            .cartesian.xyz.value.astype(float)
+        )
+        return v / np.linalg.norm(v)
+    except Exception:
+        return np.array([1.0, 0.0, 0.0])
+
+
+def sun_earth_plane_normal(sc_pos: np.ndarray, sun_hat: np.ndarray) -> np.ndarray:
+    earth_dir = -sc_pos / np.linalg.norm(sc_pos)
+    n = np.cross(sun_hat, earth_dir)
+    nn = np.linalg.norm(n)
+    if nn < 1e-12:
+        n = np.cross(np.array([0.0, 0.0, 1.0]), earth_dir)
+        nn = np.linalg.norm(n)
+    return n / nn
+
+
+def auto_mount_deg(quat_xyzw: np.ndarray, sc_pos: np.ndarray) -> float:
+    """Tip that maps body +Z onto Earth in the body X–Z / Sun–Earth plane."""
+    R = quat_to_R(quat_xyzw)
+    z = R @ np.array([0.0, 0.0, 1.0])
+    z /= np.linalg.norm(z)
+    x = R @ np.array([1.0, 0.0, 0.0])
+    x /= np.linalg.norm(x)
+    earth_dir = -sc_pos / np.linalg.norm(sc_pos)
+    return float(np.degrees(np.arctan2(float(earth_dir @ x), float(earth_dir @ z))))
 
 
 def load_intensity(png: Path) -> np.ndarray:
@@ -228,21 +276,28 @@ def j2000_to_geodetic(pos_km: np.ndarray, dt: datetime) -> tuple[np.ndarray, np.
         return lat, lon
 
 
-def _attitude_camera(sc_pos: np.ndarray, quat_xyzw: np.ndarray):
+def _attitude_camera(
+    sc_pos: np.ndarray,
+    quat_xyzw: np.ndarray,
+    dt: datetime | None = None,
+):
     R = quat_to_R(quat_xyzw)  # body -> J2000
     earth_dir = -sc_pos / np.linalg.norm(sc_pos)
-    bore = R @ uvi_boresight_body()
+    tip = UVI_MOUNT_Y_DEG
+    if tip < 0:
+        tip = auto_mount_deg(quat_xyzw, sc_pos)
+    bore = R @ uvi_boresight_body(tip)
     bore /= np.linalg.norm(bore)
     ang_earth = float(np.degrees(np.arccos(np.clip(bore @ earth_dir, -1.0, 1.0))))
-    # Camera +column from body -Y (not +Y). Matches QL raster convention:
-    # dayglow on dawn/left when Earth is in FOV.
-    by = R @ np.array([0.0, -1.0, 0.0])
+    if dt is not None:
+        by = -sun_earth_plane_normal(sc_pos, sun_hat_j2000(dt))
+    else:
+        by = R @ np.array([0.0, -1.0, 0.0])
     x0 = by - bore * (by @ bore)
     if np.linalg.norm(x0) < 1e-8:
-        by = R @ np.array([1.0, 0.0, 0.0])
+        by = R @ np.array([0.0, -1.0, 0.0])
         x0 = by - bore * (by @ bore)
     x0 /= np.linalg.norm(x0)
-    # Image +row is down. QL PNGs need the opposite of RH (x × y = bore).
     y0 = -np.cross(bore, x0)
     return bore, x0, y0, earth_dir, ang_earth
 
@@ -255,23 +310,23 @@ def build_camera(
     sc_pos: np.ndarray,
     quat_xyzw: np.ndarray,
     earth_px: tuple[float, float, float] | None,
+    dt: datetime | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Return (boresight, xhat, yhat) in J2000, or None if Earth not in FOV.
 
-    xhat = +column (right), yhat = +row (down), RH with boresight.
-
-    Earth-disk refinement is *tip-only*: rotate the attitude camera by the
-    minimal rotation that maps the LOS through the Earth-center pixel onto the
-    geocenter direction. Roll about that axis stays locked to MEAS-ATT.
+    xhat = +column (right), yhat = +row (down). Tip-only Earth-disk refinement
+    then re-applies sun-synchronous roll (−Sun×Earth).
     """
-    bore, x0, y0, earth_dir, ang_earth = _attitude_camera(sc_pos, quat_xyzw)
+    bore, x0, y0, earth_dir, ang_earth = _attitude_camera(sc_pos, quat_xyzw, dt=dt)
 
     if ang_earth > 45.0:
         if earth_px is None:
             return None
-        # Far off; seed with geocenter pointing but keep body -Y roll sense
         bore = earth_dir.copy()
-        by = quat_to_R(quat_xyzw) @ np.array([0.0, -1.0, 0.0])
+        if dt is not None:
+            by = -sun_earth_plane_normal(sc_pos, sun_hat_j2000(dt))
+        else:
+            by = quat_to_R(quat_xyzw) @ np.array([0.0, -1.0, 0.0])
         x0 = by - bore * (by @ bore)
         if np.linalg.norm(x0) < 1e-8:
             return None
@@ -301,8 +356,15 @@ def build_camera(
     s = float(np.sin(np.arccos(c)))
     bore2 = _rodrigues(bore, k, c, s)
     bore2 /= np.linalg.norm(bore2)
-    x2 = _rodrigues(x0, k, c, s)
-    x2 = x2 - bore2 * (x2 @ bore2)
+    if dt is not None:
+        by = -sun_earth_plane_normal(sc_pos, sun_hat_j2000(dt))
+        x2 = by - bore2 * (by @ bore2)
+        if np.linalg.norm(x2) < 1e-8:
+            x2 = _rodrigues(x0, k, c, s)
+            x2 = x2 - bore2 * (x2 @ bore2)
+    else:
+        x2 = _rodrigues(x0, k, c, s)
+        x2 = x2 - bore2 * (x2 @ bore2)
     if np.linalg.norm(x2) < 1e-8:
         return bore2, x0, y0
     x2 /= np.linalg.norm(x2)
@@ -317,9 +379,9 @@ def remap_frame(
     dt: datetime,
     step: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (mlat_deg, mlt_hours, intensity) samples on the emission shell."""
+    """Return (lat_deg, lon_deg, intensity) samples on the emission shell."""
     earth_px = detect_earth_center(inten, sc_pos)
-    cam = build_camera(sc_pos, quat_xyzw, earth_px)
+    cam = build_camera(sc_pos, quat_xyzw, earth_px, dt=dt)
     if cam is None:
         return np.array([]), np.array([]), np.array([])
     bore, xhat, yhat = cam
@@ -362,43 +424,42 @@ def remap_frame(
     hit = o[None, :] + t[:, None] * d
 
     lat, lon = j2000_to_geodetic(hit, dt)
-    # Keep a geographic cushion so AACGM can still map near MLAT_MIN
-    keep = lat >= (MLAT_MIN - 20.0)
+    keep = lat >= (LAT_MIN - 15.0)
     lat, lon, vals = lat[keep], lon[keep], vals[keep]
     if lat.size == 0:
         return np.array([]), np.array([]), np.array([])
 
-    try:
-        mlat, _mlon, mlt = aacgmv2.get_aacgm_coord_arr(lat, lon, EMISSION_ALT_KM, dt)
-        mlat = np.asarray(mlat, dtype=float)
-        mlt = np.asarray(mlt, dtype=float)
-    except Exception:
-        mlat = np.full(lat.shape, np.nan)
-        mlt = np.full(lat.shape, np.nan)
-        for j, (la, lo) in enumerate(zip(lat, lon)):
-            try:
-                a, _, m = aacgmv2.get_aacgm_coord(float(la), float(lo), EMISSION_ALT_KM, dt)
-                mlat[j], mlt[j] = a, m
-            except Exception:
-                pass
-
-    good = np.isfinite(mlat) & np.isfinite(mlt) & (mlat >= MLAT_MIN)
-    return mlat[good], (mlt[good] % 24.0), vals[good]
+    good = np.isfinite(lat) & np.isfinite(lon) & (lat >= LAT_MIN)
+    return lat[good], lon[good], vals[good]
 
 
-def mlt_mlat_to_xy(mlt: np.ndarray, mlat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    # Noon at top, midnight at bottom; dawn (06) left, dusk (18) right
-    theta = np.deg2rad((mlt - 12.0) * 15.0)
-    r = (90.0 - mlat) / (90.0 - MLAT_MIN)
-    return r * np.sin(theta), r * np.cos(theta)
+def effective_lon_bottom(dt: datetime) -> float:
+    """Longitude placed at plot bottom.
+
+    Sun-sync default: subsolar_lon + 90° so the Sun/dayglow sits on the left
+    (lat_lon_to_xy places lon_bottom−90° on the left).
+    """
+    if LON_BOTTOM_DEG is not None:
+        return float(LON_BOTTOM_DEG)
+    slon, _ = _subsolar_lon_lat(dt)
+    return float(slon) + 90.0
+
+
+def lat_lon_to_xy(
+    lat: np.ndarray, lon: np.ndarray, lon_bottom: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Geographic polar: N pole at origin, lon_bottom at bottom."""
+    theta = np.deg2rad(lon - lon_bottom)
+    r = (90.0 - lat) / (90.0 - LAT_MIN)
+    return r * np.sin(theta), -r * np.cos(theta)
 
 
 _COAST_SEGMENTS: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
 
 
-def coast_segments(dt: datetime) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Coastline polylines in polar MLAT/MLT xy for this UT."""
-    key = dt.strftime("%Y%m%d%H")
+def coast_segments(lon_bottom: float) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Coastline polylines in geographic polar xy for this lon_bottom."""
+    key = f"{lon_bottom:.2f}"
     if key in _COAST_SEGMENTS:
         return _COAST_SEGMENTS[key]
     segs: list[tuple[np.ndarray, np.ndarray]] = []
@@ -413,18 +474,12 @@ def coast_segments(dt: datetime) -> list[tuple[np.ndarray, np.ndarray]]:
                     continue
                 lons = coords[:, 0]
                 lats = coords[:, 1]
-                if np.nanmax(lats) < MLAT_MIN - 10:
+                if np.nanmax(lats) < LAT_MIN - 5:
                     continue
-                try:
-                    mlat, _mlon, mlt = aacgmv2.get_aacgm_coord_arr(lats, lons, 0.0, dt)
-                    mlat = np.asarray(mlat, float)
-                    mlt = np.asarray(mlt, float) % 24.0
-                except Exception:
-                    continue
-                good = np.isfinite(mlat) & (mlat >= MLAT_MIN)
+                good = np.isfinite(lats) & (lats >= LAT_MIN)
                 if good.sum() < 2:
                     continue
-                x, y = mlt_mlat_to_xy(mlt, mlat)
+                x, y = lat_lon_to_xy(lats, lons, lon_bottom)
                 x = np.where(good, x, np.nan)
                 y = np.where(good, y, np.nan)
                 segs.append((x, y))
@@ -434,7 +489,105 @@ def coast_segments(dt: datetime) -> list[tuple[np.ndarray, np.ndarray]]:
     return segs
 
 
-def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
+def _subsolar_lon_lat(dt: datetime) -> tuple[float, float]:
+    """Subsolar lon/lat (deg) for terminator drawing."""
+    try:
+        from astropy.coordinates import get_body, ITRS
+        from astropy.time import Time
+        import astropy.units as u
+
+        t = Time(dt)
+        # get_body('sun') returns GCRS; transform to ITRS for geographic lon/lat
+        sun = get_body("sun", t).transform_to(ITRS(obstime=t))
+        lon = float(sun.earth_location.geodetic.lon.deg)
+        lat = float(sun.earth_location.geodetic.lat.deg)
+        return lon, lat
+    except Exception:
+        pass
+    try:
+        from astropy.coordinates import get_sun, SkyCoord, ITRS
+        from astropy.time import Time
+        import astropy.units as u
+
+        t = Time(dt)
+        sun = get_sun(t)
+        sc = SkyCoord(
+            ra=sun.ra,
+            dec=sun.dec,
+            frame="gcrs",
+            obstime=t,
+            distance=1.0 * u.au,
+        )
+        itrs = sc.transform_to(ITRS(obstime=t))
+        lon = float(itrs.earth_location.geodetic.lon.deg)
+        lat = float(itrs.earth_location.geodetic.lat.deg)
+        return lon, lat
+    except Exception:
+        pass
+    # Fallback: mean solar longitude + approximate declination
+    hours = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
+    lon = (180.0 - 15.0 * hours) % 360.0
+    if lon > 180.0:
+        lon -= 360.0
+    doy = dt.timetuple().tm_yday
+    lat = 23.44 * np.sin(2.0 * np.pi * (doy - 81) / 365.25)
+    return lon, float(lat)
+
+
+def terminator_xy(
+    dt: datetime, lon_bottom: float, n: int = 360
+) -> tuple[np.ndarray, np.ndarray]:
+    """Great-circle terminator projected into geographic polar xy."""
+    slon, slat = _subsolar_lon_lat(dt)
+    lons = np.linspace(-180.0, 180.0, n, endpoint=False)
+    if abs(slat) < 1e-6:
+        lon_t = np.array([slon + 90.0, slon + 90.0, slon - 90.0, slon - 90.0])
+        lat_t = np.array([90.0, LAT_MIN, LAT_MIN, 90.0])
+        return lat_lon_to_xy(lat_t, lon_t, lon_bottom)
+
+    tan_lat = -np.cos(np.deg2rad(slat)) / np.sin(np.deg2rad(slat)) * np.cos(
+        np.deg2rad(lons - slon)
+    )
+    lats = np.degrees(np.arctan(tan_lat))
+    good = lats >= LAT_MIN
+    if good.sum() < 2:
+        return np.array([]), np.array([])
+    x, y = lat_lon_to_xy(lats, lons, lon_bottom)
+    x = np.where(good, x, np.nan)
+    y = np.where(good, y, np.nan)
+    return x, y
+
+
+def mlat_annotation_points(
+    dt: datetime, mlat_target: float, lon_bottom: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample geographic points near a given AACGM MLAT for text placement."""
+    if aacgmv2 is None:
+        return np.array([]), np.array([])
+    lons = np.linspace(-180.0, 180.0, 72, endpoint=False)
+    lats = np.linspace(LAT_MIN, 89.5, 40)
+    LON, LAT = np.meshgrid(lons, lats)
+    try:
+        mlat, _mlon, _mlt = aacgmv2.get_aacgm_coord_arr(
+            LAT.ravel(), LON.ravel(), EMISSION_ALT_KM, dt
+        )
+        mlat = np.asarray(mlat, dtype=float).reshape(LAT.shape)
+    except Exception:
+        return np.array([]), np.array([])
+    band = np.abs(mlat - mlat_target) < 0.8
+    if not np.any(band):
+        return np.array([]), np.array([])
+    x, y = lat_lon_to_xy(LAT[band], LON[band], lon_bottom)
+    right = x > 0.15
+    if np.any(right):
+        x, y = x[right], y[right]
+    if x.size == 0:
+        return np.array([]), np.array([])
+    return np.array([float(np.median(x))]), np.array([float(np.median(y))])
+
+
+def render_polar(lat, lon, vals, dt: datetime, out_path: Path, vmin, vmax):
+    lon_bottom = effective_lon_bottom(dt)
     fig, ax = plt.subplots(figsize=(7.2, 7.8), dpi=120)
     ax.set_aspect("equal")
     ax.set_xlim(-1.05, 1.05)
@@ -445,7 +598,7 @@ def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
     ax.add_patch(Circle((0, 0), 1.0, color="#000000", zorder=0))
 
     if len(vals) > 50:
-        x, y = mlt_mlat_to_xy(mlt, mlat)
+        x, y = lat_lon_to_xy(lat, lon, lon_bottom)
         xi = np.linspace(-1, 1, 480)
         yi = np.linspace(-1, 1, 480)
         XX, YY = np.meshgrid(xi, yi)
@@ -469,38 +622,41 @@ def render_polar(mlat, mlt, vals, dt: datetime, out_path: Path, vmin, vmax):
         cbar.ax.set_xticks([vmin, vmax])
         cbar.ax.set_xticklabels(["Dim", "Bright"])
 
-    for mlat_ring in [40, 50, 60, 70, 80]:
-        r = (90 - mlat_ring) / (90 - MLAT_MIN)
+    for lat_ring in [40, 50, 60, 70, 80]:
+        r = (90 - lat_ring) / (90 - LAT_MIN)
         ax.add_patch(
             Circle((0, 0), r, fill=False, ls="--", lw=0.7, color="white", alpha=0.55, zorder=3)
         )
-        # Outer (40°) ring coincides with the disk edge — place label just inside.
-        label_y = r - 0.035 if mlat_ring == int(MLAT_MIN) else r + 0.012
+        label_y = r - 0.035 if lat_ring == int(LAT_MIN) else r + 0.012
         ax.text(
             -0.04,
             label_y,
-            f"{mlat_ring}°",
+            f"{lat_ring}°",
             color="white",
             fontsize=8,
             ha="right",
             bbox=dict(boxstyle="square,pad=0.15", fc="black", ec="none", alpha=0.75),
             zorder=6,
         )
-    # Explicit MLAT annotations on the right (style match to official QL)
-    ax.text(0.72, 0.30, "70° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
-    ax.text(0.82, 0.55, "60° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
-    ax.text(0.88, 0.78, "50° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
 
-    for mlt_h in range(0, 24, 3):
-        x0, y0 = mlt_mlat_to_xy(np.array([float(mlt_h)]), np.array([MLAT_MIN]))
+    for lon_m in np.arange(-180.0, 180.0, 45.0):
+        x0, y0 = lat_lon_to_xy(np.array([LAT_MIN]), np.array([lon_m]), lon_bottom)
         ax.plot([0, x0[0]], [0, y0[0]], ls="--", lw=0.5, color="white", alpha=0.35, zorder=3)
 
-    # Noon–midnight meridian
-    x_n, y_n = mlt_mlat_to_xy(np.array([12.0, 0.0]), np.array([MLAT_MIN, MLAT_MIN]))
-    ax.plot([x_n[0], x_n[1]], [y_n[0], y_n[1]], ls="--", lw=1.6, color="white", alpha=0.9, zorder=4)
+    tx, ty = terminator_xy(dt, lon_bottom)
+    if len(tx) > 1:
+        ax.plot(tx, ty, ls="--", lw=1.6, color="white", alpha=0.9, zorder=4)
 
-    for cx, cy in coast_segments(dt):
+    for cx, cy in coast_segments(lon_bottom):
         ax.plot(cx, cy, color="#e6c35c", lw=0.7, solid_capstyle="round", zorder=5, alpha=0.95)
+
+    for mlat_t, fallback in ((70.0, (0.55, 0.05)), (60.0, (0.78, 0.18))):
+        mx, my = mlat_annotation_points(dt, mlat_t, lon_bottom)
+        if len(mx):
+            px, py = float(mx[0]), float(my[0])
+        else:
+            px, py = fallback
+        ax.text(px, py, f"{int(mlat_t)}° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
 
     ax.set_title(
         f"SMILE UVI quicklook\n{dt.strftime('%Y-%m-%d %H:%M:%S')} UT",
@@ -525,16 +681,25 @@ def main():
     ap.add_argument("--every", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument(
+        "--lon-bottom",
+        type=float,
+        default=None,
+        help="Geographic longitude (deg) at plot bottom. Omit for sun-sync "
+        "(subsolar lon on the left). Use -90 for fixed US/Canada at bottom.",
+    )
+    ap.add_argument(
         "--mount-deg",
         type=float,
-        default=25.0,
-        help="UVI optical-axis tip about body +Y from PLM +Z (deg). "
-        "Paper nominal 24°; use 25 for the 25° filter/mount adjustment.",
+        default=-1.0,
+        help="UVI tip about body +Y from PLM +Z (deg). Negative (default) = "
+        "auto from MEAS-ATT Z–Earth angle (sun-sync). Force 24/25 if needed.",
     )
     args = ap.parse_args()
 
-    global UVI_MOUNT_Y_DEG
+    global LON_BOTTOM_DEG, UVI_MOUNT_Y_DEG, _COAST_SEGMENTS
+    LON_BOTTOM_DEG = None if args.lon_bottom is None else float(args.lon_bottom)
     UVI_MOUNT_Y_DEG = float(args.mount_deg)
+    _COAST_SEGMENTS = {}
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     stop = datetime.fromisoformat(args.stop).replace(tzinfo=timezone.utc)
@@ -555,10 +720,16 @@ def main():
         return 1
 
     print(f"Rendering {len(selected)} frames from {selected[0][0]} to {selected[-1][0]}")
-    print(
-        f"Geomagnetic polar: AACGM MLAT/MLT, MLAT >= {MLAT_MIN:g}°, noon at top; "
-        f"UVI mount Ry(+{UVI_MOUNT_Y_DEG:g}°)"
+    if LON_BOTTOM_DEG is None:
+        orient = "sun-sync (subsolar / dayglow at left)"
+    else:
+        orient = f"lon {LON_BOTTOM_DEG:g}° at bottom"
+    mount_msg = (
+        "auto from Z–Earth"
+        if UVI_MOUNT_Y_DEG < 0
+        else f"Ry(+{UVI_MOUNT_Y_DEG:g}°)"
     )
+    print(f"Geographic polar: N pole center, {orient}; UVI mount {mount_msg}")
 
     sample = []
     for dt, fp in selected[:: max(1, len(selected) // 8)]:
@@ -582,9 +753,9 @@ def main():
             sc = interp_row(aux.unix, aux.pos_j2000_km, dt.timestamp())
             q = interp_row(aux.unix, aux.quat_xyzw, dt.timestamp())
             earth = detect_earth_center(inten, sc)
-            mlat, mlt, vals = remap_frame(inten, sc, q, dt, step=args.step_px)
+            lat, lon, vals = remap_frame(inten, sc, q, dt, step=args.step_px)
             out = args.frame_dir / f"frame_{i:04d}_{dt.strftime('%H%M%S')}.png"
-            render_polar(mlat, mlt, vals, dt, out, vmin=vmin, vmax=vmax)
+            render_polar(lat, lon, vals, dt, out, vmin=vmin, vmax=vmax)
             w.writerow(
                 [
                     i,

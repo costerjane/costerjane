@@ -1,22 +1,28 @@
-# SMILE UVI polar (AACGM MLAT/MLT) remapping
+# SMILE UVI polar (geographic, sun-synchronous) remapping
 
 Remaps public EMDS UVI **camera-frame** quicklook PNGs onto a north-pole
-**AACGM MLAT / MLT** map and builds a movie.
+**geographic** map and builds a movie.
 
-The polar view is centered on the **magnetic pole**, extending down to
-**40° MLAT**, with noon (12 MLT) at top and midnight (00 MLT) at bottom. The
-auroral oval is therefore a centered ring around the plot origin.
+The polar view is centered on the **geographic North Pole**, extending down to
+**40°N**. Default orientation is **sun-synchronous**: the subsolar longitude is
+kept on the **left** so dayglow stays fixed while continents rotate — matching
+SMILE’s sun-locked science attitude (body +Y ≈ GSE +Y). Pass `--lon-bottom -90`
+for a fixed US/Canada-at-bottom view instead.
+
+The auroral oval is a ring around the *magnetic* pole, so it appears offset
+from the geographic center — that is expected. Optional AACGM MLAT labels are
+annotated for style match to official QL products.
 
 ## Geometric chain (required)
 
 1. Load UVI image + spacecraft **position** and **attitude** at the frame UT  
-2. Build camera LOS for each pixel (UVI boresight from body attitude; limb-fit
-   Earth center applies a **tip-only** correction so the geocenter LOS matches
-   the Earth disk while preserving MEAS-ATT roll)  
-3. Intersect each LOS with the emission shell at \(R_E + 110\,\mathrm{km}\)  
-4. Convert hit points J2000 → GEO (ITRS) → AACGM **MLAT / MLT**  
-5. Plot on a polar grid (MLAT rings 40/50/60/70/80°, MLT spokes, AACGM-warped
-   coastlines, noon–midnight meridian)
+2. Build camera LOS (sun-sync roll from `−Sun×Earth`; UVI tip auto from
+   MEAS-ATT Z–Earth angle, or `--mount-deg`)  
+3. Limb-fit tip-only correction to geocenter (preserves sun-sync roll)  
+4. Intersect each LOS with the emission shell at \(R_E + 110\,\mathrm{km}\)  
+5. Convert hit points J2000 → GEO (ITRS) lat/lon  
+6. Plot on a geographic polar grid (lat rings 40/50/60/70/80°, lon spokes,
+   coastlines, solar terminator)
 
 ## Public coverage notes
 
@@ -39,6 +45,11 @@ python scripts/uvi_polar/remap_uvi_polar.py \
   --start 2026-10-05T00:00:00 \
   --stop  2026-10-05T06:00:00
 
+# Optional: fixed US-at-bottom instead of sun-sync
+#   --lon-bottom -90
+# Optional: force 25° mount tip instead of auto
+#   --mount-deg 25
+
 bash scripts/uvi_polar/make_movie.sh /path/to/frames /path/to/out.mp4
 ```
 
@@ -46,8 +57,7 @@ bash scripts/uvi_polar/make_movie.sh /path/to/frames /path/to/out.mp4
 
 - Public inputs are **QL PNGs**, not private L1/L2 CDFs — intensity is relative
   display brightness, not calibrated Rayleighs.
-- UVI mounting uses PLM \(+Z\) tipped by \(R_y(+\mathrm{mount})\) toward Earth
-  (`--mount-deg`, default **25°** for the 25° filter/mount; Zhang et al. 2025
-  cite 24°). Camera \(+\)column from body \(-Y\), with QL row-axis flip. Limb-fit
-  tip-only refinement absorbs residual pointing error without scrambling roll.
+- Camera \(+\)column from sun-synchronous \(-\mathrm{Sun}\times\mathrm{Earth}\)
+  (≈ body \(-Y\)), with QL row-axis flip. Limb-fit tip-only refinement then
+  re-applies that roll.
 - Not an official SOC/SAS product; do not publish as calibrated L2.
