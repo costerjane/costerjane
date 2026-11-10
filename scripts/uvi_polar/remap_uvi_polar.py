@@ -14,8 +14,9 @@ Orientation: noon (12 MLT) at top, midnight (00 MLT) at bottom; dawn left,
 dusk right. The auroral oval is centered on the magnetic pole.
 
 Camera model:
-  - Body +Z is PLM normal; UVI optical axis is Ry(+24 deg)*+Z in the body frame
-    (Zhang et al. 2025; SMILE spacecraft paper: SXI/UVI 24 deg offset in Z/X).
+  - Body +Z is PLM normal; UVI optical axis is Ry(+mount_deg)*+Z in the body frame
+    (Zhang et al. 2025 cites 24°; adjustable --mount-deg, default 25° for the
+    PLM/SXI “25° filter” mount tip used here).
   - Quaternion_J2000 (qx,qy,qz,qw) rotates body -> J2000.
   - When the Earth disk is detectable, apply a *tip-only* correction that maps
     the LOS through the limb-fit Earth center onto the geocenter direction,
@@ -50,7 +51,7 @@ EMISSION_ALT_KM = 110.0
 FOV_DEG = 9.97
 IMG_SIZE = 512
 MLAT_MIN = 40.0  # geomagnetic polar view extends from mag pole down to 40° MLAT
-UVI_MOUNT_Y_DEG = 24.0  # UVI optical axis = Ry(+24°)·+Z in body frame
+UVI_MOUNT_Y_DEG = 25.0  # UVI optical axis = Ry(+mount)·+Z; 25° filter / mount tip
 
 logging.getLogger("aacgmv2").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -110,7 +111,7 @@ def roty(deg: float) -> np.ndarray:
 
 
 def uvi_boresight_body() -> np.ndarray:
-    # PLM normal = +Z; UVI optical axis tipped +24° about +Y toward +X (Earth)
+    # PLM normal = +Z; UVI optical axis tipped about +Y toward +X (Earth)
     v = roty(UVI_MOUNT_Y_DEG) @ np.array([0.0, 0.0, 1.0])
     return v / np.linalg.norm(v)
 
@@ -523,7 +524,17 @@ def main():
     ap.add_argument("--step-px", type=int, default=1)
     ap.add_argument("--every", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument(
+        "--mount-deg",
+        type=float,
+        default=25.0,
+        help="UVI optical-axis tip about body +Y from PLM +Z (deg). "
+        "Paper nominal 24°; use 25 for the 25° filter/mount adjustment.",
+    )
     args = ap.parse_args()
+
+    global UVI_MOUNT_Y_DEG
+    UVI_MOUNT_Y_DEG = float(args.mount_deg)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     stop = datetime.fromisoformat(args.stop).replace(tzinfo=timezone.utc)
@@ -544,7 +555,10 @@ def main():
         return 1
 
     print(f"Rendering {len(selected)} frames from {selected[0][0]} to {selected[-1][0]}")
-    print(f"Geomagnetic polar: AACGM MLAT/MLT, MLAT >= {MLAT_MIN:g}°, noon at top")
+    print(
+        f"Geomagnetic polar: AACGM MLAT/MLT, MLAT >= {MLAT_MIN:g}°, noon at top; "
+        f"UVI mount Ry(+{UVI_MOUNT_Y_DEG:g}°)"
+    )
 
     sample = []
     for dt, fp in selected[:: max(1, len(selected) // 8)]:
