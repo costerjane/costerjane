@@ -26,6 +26,9 @@ annotated for style match to official QL products.
 
 ## Public coverage notes
 
+- **2026-10-30**: Full-day UVI QL; SMILE at ~19 R_E over the northern
+  hemisphere with Earth centered in FOV for **00:00–12:00 UT** (MEAS-ORBIT /
+  MEAS-ATT V01). Polar frames annotate the sub-satellite point and UVI FOV rim.
 - **2026-10-05**: UVI QL available through the day; Earth is in FOV for the
   early hours used here (**00:00–06:00 UT**).
 - **2026-10-10 00–05 UT**: public QL is mostly star fields (attitude ~145° from
@@ -42,8 +45,8 @@ python scripts/uvi_polar/remap_uvi_polar.py \
   --orbit-cdf /path/to/SMILE_GSS_AUX_MEAS-ORBIT_YYYYMMDD_V*.cdf \
   --att-cdf   /path/to/SMILE_GSS_AUX_MEAS-ATT_YYYYMMDD_V*.cdf \
   --frame-dir /path/to/frames \
-  --start 2026-10-05T00:00:00 \
-  --stop  2026-10-05T06:00:00
+  --start 2026-10-30T00:00:00 \
+  --stop  2026-10-30T12:00:00
 
 # Optional: fixed US-at-bottom instead of sun-sync
 #   --lon-bottom -90
@@ -51,6 +54,11 @@ python scripts/uvi_polar/remap_uvi_polar.py \
 #   --mount-deg 25
 
 bash scripts/uvi_polar/make_movie.sh /path/to/frames /path/to/out.mp4
+```
+
+Each polar frame annotates the **sub-satellite point** (red) and the **UVI FOV
+rim** on the 110 km shell (orange) so remapped aurora can be checked against
+spacecraft location over the northern hemisphere.
 ```
 
 ## Caveats
