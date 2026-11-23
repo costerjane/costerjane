@@ -187,7 +187,9 @@ def detect_earth_center(
     """Limb-based Earth center using expected angular radius from SC range.
 
     Brightness-weighted centroids bias toward the aurora and distort FOV
-    morphology; instead fit the right-hand limb with the known Earth size.
+    morphology; instead fit left- and right-hand limbs with the known Earth
+    size and keep the solution whose center is closest to the image midplane
+    (UVI tip keeps Earth near mid-FOV in science mode).
     """
     valid = np.isfinite(inten)
     if valid.sum() < 1000:
@@ -206,31 +208,48 @@ def detect_earth_center(
         return None
 
     exp_r = expected_earth_radius_px(sc_pos)
+    if exp_r < 40 or exp_r > 240:
+        return None
     yy, xx = np.indices(inten.shape)
-    limb_x: list[float] = []
-    limb_y: list[float] = []
+    right_x: list[float] = []
+    right_y: list[float] = []
+    left_x: list[float] = []
+    left_y: list[float] = []
     for y in range(IMG_SIZE):
         xs = xx[y][earth[y]]
         if xs.size > 10:
-            limb_x.append(float(xs.max()))
-            limb_y.append(float(y))
-    if len(limb_x) < 30:
+            right_x.append(float(xs.max()))
+            right_y.append(float(y))
+            left_x.append(float(xs.min()))
+            left_y.append(float(y))
+
+    candidates: list[tuple[float, float, float]] = []
+    for limb_x, limb_y, side in (
+        (right_x, right_y, "right"),
+        (left_x, left_y, "left"),
+    ):
+        if len(limb_x) < 30:
+            continue
+        limb_x_a = np.asarray(limb_x)
+        limb_y_a = np.asarray(limb_y)
+        cy = 0.5 * (limb_y_a.min() + limb_y_a.max())
+        dy = limb_y_a - cy
+        ok = np.abs(dy) < exp_r * 0.95
+        if ok.sum() < 20:
+            continue
+        chord = np.sqrt(np.maximum(exp_r**2 - dy[ok] ** 2, 0.0))
+        if side == "right":
+            cx_est = limb_x_a[ok] - chord
+        else:
+            cx_est = limb_x_a[ok] + chord
+        cx = float(np.median(cx_est))
+        if 40.0 < cx < 470.0 and 40.0 < cy < 470.0:
+            candidates.append((cx, float(cy), float(exp_r)))
+    if not candidates:
         return None
-    limb_x_a = np.asarray(limb_x)
-    limb_y_a = np.asarray(limb_y)
-    cy = 0.5 * (limb_y_a.min() + limb_y_a.max())
-    dy = limb_y_a - cy
-    ok = np.abs(dy) < exp_r * 0.95
-    if ok.sum() < 20:
-        return None
-    cx_est = limb_x_a[ok] - np.sqrt(np.maximum(exp_r**2 - dy[ok] ** 2, 0.0))
-    cx = float(np.median(cx_est))
-    cy = float(cy)
-    if not (40.0 < cx < 470.0 and 40.0 < cy < 470.0):
-        return None
-    if exp_r < 40 or exp_r > 240:
-        return None
-    return cx, cy, float(exp_r)
+    # Prefer the Earth center nearest the FOV midplane (science tip).
+    candidates.sort(key=lambda c: (c[0] - 255.5) ** 2 + (c[1] - 255.5) ** 2)
+    return candidates[0]
 
 
 def j2000_to_geodetic(pos_km: np.ndarray, dt: datetime) -> tuple[np.ndarray, np.ndarray]:
@@ -586,7 +605,54 @@ def mlat_annotation_points(
     return np.array([float(np.median(x))]), np.array([float(np.median(y))])
 
 
-def render_polar(lat, lon, vals, dt: datetime, out_path: Path, vmin, vmax):
+def fov_rim_latlon(
+    sc_pos: np.ndarray,
+    bore: np.ndarray,
+    xhat: np.ndarray,
+    yhat: np.ndarray,
+    dt: datetime,
+    n: int = 180,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Intersect the circular FOV rim with the emission shell -> GEO lat/lon."""
+    radius = RE_KM + EMISSION_ALT_KM
+    half = np.deg2rad(FOV_DEG / 2.0)
+    phi = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    # Unit vectors on the FOV cone rim
+    dirs = (
+        np.cos(half) * bore[None, :]
+        + np.sin(half) * (np.cos(phi)[:, None] * xhat[None, :] + np.sin(phi)[:, None] * yhat[None, :])
+    )
+    dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+    o = sc_pos
+    bcoef = 2.0 * (dirs @ o)
+    ccoef = np.dot(o, o) - radius * radius
+    disc = bcoef * bcoef - 4.0 * ccoef
+    ok = disc >= 0
+    if not np.any(ok):
+        return np.array([]), np.array([])
+    dirs, bcoef, disc = dirs[ok], bcoef[ok], disc[ok]
+    s = np.sqrt(disc)
+    t1 = (-bcoef - s) / 2.0
+    t2 = (-bcoef + s) / 2.0
+    t = np.where((t1 > 0) & ((t1 <= t2) | (t2 <= 0)), t1, t2)
+    ok = t > 0
+    if not np.any(ok):
+        return np.array([]), np.array([])
+    hit = o[None, :] + t[ok, None] * dirs[ok]
+    return j2000_to_geodetic(hit, dt)
+
+
+def render_polar(
+    lat,
+    lon,
+    vals,
+    dt: datetime,
+    out_path: Path,
+    vmin,
+    vmax,
+    sc_pos: np.ndarray | None = None,
+    cam: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+):
     lon_bottom = effective_lon_bottom(dt)
     fig, ax = plt.subplots(figsize=(7.2, 7.8), dpi=120)
     ax.set_aspect("equal")
@@ -658,12 +724,57 @@ def render_polar(lat, lon, vals, dt: datetime, out_path: Path, vmin, vmax):
             px, py = fallback
         ax.text(px, py, f"{int(mlat_t)}° MLAT", color="#7ec8ff", fontsize=8, zorder=6)
 
-    ax.set_title(
-        f"SMILE UVI quicklook\n{dt.strftime('%Y-%m-%d %H:%M:%S')} UT",
-        color="white",
-        fontsize=14,
-        pad=12,
-    )
+    # Align remapped scene with spacecraft location over the northern hemisphere:
+    # FOV rim on the 110 km shell + sub-satellite geographic footprint.
+    sc_lat = sc_lon = sc_re = None
+    if sc_pos is not None:
+        sc_re = float(np.linalg.norm(sc_pos) / RE_KM)
+        sc_lat, sc_lon = j2000_to_geodetic(sc_pos, dt)
+        if float(sc_lat) >= LAT_MIN:
+            sx, sy = lat_lon_to_xy(np.array([sc_lat]), np.array([sc_lon]), lon_bottom)
+            ax.plot(
+                sx,
+                sy,
+                marker="o",
+                markersize=7,
+                markerfacecolor="none",
+                markeredgecolor="#ff6b6b",
+                markeredgewidth=1.6,
+                zorder=8,
+            )
+            ax.plot(sx, sy, marker="+", markersize=9, color="#ff6b6b", zorder=8)
+            ax.text(
+                float(sx[0]) + 0.04,
+                float(sy[0]) + 0.04,
+                "SC",
+                color="#ff6b6b",
+                fontsize=8,
+                zorder=8,
+            )
+    if cam is not None and sc_pos is not None:
+        bore, xhat, yhat = cam
+        flat, flon = fov_rim_latlon(sc_pos, bore, xhat, yhat, dt)
+        if len(flat):
+            good = np.isfinite(flat) & (flat >= LAT_MIN)
+            if good.sum() >= 3:
+                fx, fy = lat_lon_to_xy(flat[good], flon[good], lon_bottom)
+                # Close the rim for plotting
+                ax.plot(
+                    np.r_[fx, fx[0]],
+                    np.r_[fy, fy[0]],
+                    color="#ff9f43",
+                    lw=1.2,
+                    alpha=0.95,
+                    zorder=7,
+                    label="UVI FOV",
+                )
+
+    title = f"SMILE UVI quicklook\n{dt.strftime('%Y-%m-%d %H:%M:%S')} UT"
+    if sc_lat is not None:
+        title += (
+            f"\nSC {sc_re:.1f} R$_E$  lat {sc_lat:.1f}°N  lon {sc_lon:.1f}°"
+        )
+    ax.set_title(title, color="white", fontsize=13, pad=12)
     fig.tight_layout()
     fig.savefig(out_path, facecolor=fig.get_facecolor(), bbox_inches="tight")
     plt.close(fig)
@@ -747,21 +858,40 @@ def main():
     manifest = args.frame_dir / "manifest.csv"
     with manifest.open("w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["frame", "time_ut", "n_samples", "earth_px", "path"])
+        w.writerow(
+            [
+                "frame",
+                "time_ut",
+                "n_samples",
+                "earth_px",
+                "sc_re",
+                "sc_lat",
+                "sc_lon",
+                "path",
+            ]
+        )
         for i, (dt, fp) in enumerate(tqdm(selected)):
             inten = load_intensity(fp)
             sc = interp_row(aux.unix, aux.pos_j2000_km, dt.timestamp())
             q = interp_row(aux.unix, aux.quat_xyzw, dt.timestamp())
             earth = detect_earth_center(inten, sc)
+            cam = build_camera(sc, q, earth, dt=dt)
             lat, lon, vals = remap_frame(inten, sc, q, dt, step=args.step_px)
+            sc_lat, sc_lon = j2000_to_geodetic(sc, dt)
+            sc_re = float(np.linalg.norm(sc) / RE_KM)
             out = args.frame_dir / f"frame_{i:04d}_{dt.strftime('%H%M%S')}.png"
-            render_polar(lat, lon, vals, dt, out, vmin=vmin, vmax=vmax)
+            render_polar(
+                lat, lon, vals, dt, out, vmin=vmin, vmax=vmax, sc_pos=sc, cam=cam
+            )
             w.writerow(
                 [
                     i,
                     dt.isoformat(),
                     len(vals),
                     "" if earth is None else f"{earth[0]:.1f},{earth[1]:.1f},{earth[2]:.1f}",
+                    f"{sc_re:.3f}",
+                    f"{float(sc_lat):.3f}",
+                    f"{float(sc_lon):.3f}",
                     out.name,
                 ]
             )
